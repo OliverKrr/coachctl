@@ -91,7 +91,7 @@ allows the record and read commands, and asks before external writes.
 | Journal | `journal add` (stdin), `list [--since] [--grep] [--headlines]`, `show <id>`, `correct <id>`, `archive <id>` |
 | Items   | `item add --kind commitment\|flag`, `list [--overdue]`, `resolve <id> [--note] [--dismiss]` |
 | Metrics | `metric define`, `record <series> <value>`, `get <series> [--as-of] [--all]`, `list`, `stale`, `delete <id>` |
-| ICU     | `icu profile\|activities\|activity\|streams\|wellness\|fitness\|events\|week\|summary`, `icu get <path>` |
+| ICU     | `icu profile\|activity\|streams\|wellness\|fitness\|events\|week\|summary`, `icu activities [--type\|--sport]`, `icu get <path>` |
 | ICU (w) | `icu workout push\|edit\|delete`, `icu settings set` (`--dry-run`)                       |
 | Hevy    | `hevy workouts\|workout\|history\|routines\|folders`, `hevy templates search`, `hevy routine show` |
 | Hevy (w) | `hevy routine create\|update`, `hevy workout create` (`--dry-run`)                     |

@@ -188,13 +188,14 @@ func fakeICU(t *testing.T, posted *map[string]any) *httptest.Server {
 		case r.URL.Path == "/athlete/i42" && r.Method == http.MethodGet:
 			_, _ = io.WriteString(w, `{"id":"i42","name":"Test Athlete","timezone":"America/New_York","icu_weight":70,"icu_resting_hr":48,"icu_api_key":"SECRET","email":"a@example.com",
 				"sportSettings":[{"types":["Ride","VirtualRide"],"ftp":250,"lthr":165,"max_hr":185,"power_zones":[55,75,90,105,120,150,999]},
-				{"types":["Run"],"threshold_pace":4.0,"pace_units":"MINS_KM","lthr":170}]}`)
+				{"types":["Run","VirtualRun","TrailRun"],"threshold_pace":4.0,"pace_units":"MINS_KM","lthr":170}]}`)
 		case r.URL.Path == "/athlete/i42/activities":
 			if r.URL.Query().Get("oldest") != "2026-10-11" || r.URL.Query().Get("newest") != "2026-10-17" {
 				t.Errorf("activities range = %s", r.URL.RawQuery)
 			}
 			var rows []map[string]any
 			_ = json.Unmarshal([]byte(`[{"id":"i2","start_date_local":"2026-10-16T07:00:00","type":"Run","name":"Easy, \"short\"","distance":10000,"moving_time":3000,"icu_training_load":50,"icu_intensity":70.5,"average_heartrate":140},
+				{"id":"i3","start_date_local":"2026-10-15T19:00:00","type":"VirtualRun","name":"Treadmill","distance":8000,"moving_time":2400,"icu_training_load":40},
 				{"id":"i1","start_date_local":"2026-10-14T18:00:00","type":"Ride","name":"Z2","distance":40000,"moving_time":5400,"icu_training_load":80}]`), &rows)
 			// Like the API, return only the named fields.
 			if fields := r.URL.Query().Get("fields"); fields != "" {
@@ -256,7 +257,7 @@ func TestICU(t *testing.T) {
 	t.Setenv("INTERVALS_API_KEY", "k3y")
 
 	out := e.ok("", "icu", "profile")
-	for _, want := range []string{"Today (athlete timezone): Sat 2026-10-17", "Ride/VirtualRide: FTP 250 W, LTHR 165 bpm, max HR 185 bpm", "Run: threshold pace 4:10/km, LTHR 170 bpm", "power zones, % of FTP: 55 75 90 105 120 150 999"} {
+	for _, want := range []string{"Today (athlete timezone): Sat 2026-10-17", "Ride/VirtualRide: FTP 250 W, LTHR 165 bpm, max HR 185 bpm", "Run/VirtualRun/TrailRun: threshold pace 4:10/km, LTHR 170 bpm", "power zones, % of FTP: 55 75 90 105 120 150 999"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("profile lacks %q\n%s", want, out)
 		}
@@ -273,14 +274,27 @@ func TestICU(t *testing.T) {
 		t.Error("activities sort oldest first")
 	}
 	text := e.ok("", "icu", "activities", "--type", "run")
-	if !strings.Contains(text, "10.0 km  0:50:00  load 50  IF 70%  HR 140") || strings.Contains(text, "Z2") {
-		t.Errorf("text:\n%s", text)
+	if !strings.Contains(text, "10.0 km  0:50:00  load 50  IF 70%  HR 140") || strings.Contains(text, "Z2") || strings.Contains(text, "Treadmill") {
+		t.Errorf("--type matches exactly:\n%s", text)
+	}
+	// --sport expands to the types the athlete's sport settings group.
+	text = e.ok("", "icu", "activities", "--sport", "run")
+	if !strings.Contains(text, "Treadmill") || !strings.Contains(text, "Easy") || strings.Contains(text, "Z2") ||
+		!strings.Contains(text, "2 activities of type Run/VirtualRun/TrailRun 2026-10-11 – 2026-10-17: 18.0 km") {
+		t.Errorf("--sport text:\n%s", text)
+	}
+	if text := e.ok("", "icu", "activities", "--sport", "Run", "--type", "Ride"); !strings.Contains(text, "3 activities of type Run/VirtualRun/TrailRun/Ride") {
+		t.Errorf("--sport and --type combine:\n%s", text)
+	}
+	_, errOut, code := e.run("", "icu", "activities", "--sport", "Hike")
+	if code != ExitUsage || !strings.Contains(errOut, `no sport settings cover "Hike"`) || !strings.Contains(errOut, "Ride/VirtualRide, Run/VirtualRun/TrailRun") || !strings.Contains(errOut, "--type Hike") {
+		t.Errorf("--sport without settings: exit %d, %s", code, errOut)
 	}
 	var picked []map[string]any
 	if err := json.Unmarshal([]byte(e.ok("", "icu", "activities", "--fields", "start_date_local,type", "--json")), &picked); err != nil {
 		t.Fatal(err)
 	}
-	if len(picked) != 2 || picked[0]["id"] != "i1" || picked[1]["id"] != "i2" || picked[0]["name"] != nil {
+	if len(picked) != 3 || picked[0]["id"] != "i1" || picked[2]["id"] != "i2" || picked[0]["name"] != nil {
 		t.Errorf("--fields --json must keep the id and only the named fields: %+v", picked)
 	}
 	picked = nil
@@ -289,6 +303,13 @@ func TestICU(t *testing.T) {
 	}
 	if len(picked) != 1 || picked[0]["id"] != "i2" || picked[0]["type"] != "Run" {
 		t.Errorf("--type with --fields lacking type must still filter: %+v", picked)
+	}
+	picked = nil
+	if err := json.Unmarshal([]byte(e.ok("", "icu", "activities", "--fields", "start_date_local", "--sport", "Run", "--json")), &picked); err != nil {
+		t.Fatal(err)
+	}
+	if len(picked) != 2 || picked[0]["type"] != "VirtualRun" || picked[1]["type"] != "Run" {
+		t.Errorf("--sport with --fields lacking type must still filter: %+v", picked)
 	}
 	if csvOut := e.ok("", "icu", "activities", "--fields", "start_date_local", "--type", "Ride", "--csv"); csvOut != "start_date_local\n2026-10-14T18:00:00\n" {
 		t.Errorf("--fields --csv keeps the named columns only:\n%s", csvOut)

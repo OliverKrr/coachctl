@@ -334,6 +334,41 @@ func filterTypes(rows []icu.Object, types []string) []icu.Object {
 	return out
 }
 
+// sportTypes expands each sport to every activity type the athlete's sport
+// settings group with it: Run becomes Run, VirtualRun, TrailRun when the Run
+// settings cover all three.
+func sportTypes(ath icu.Object, sports []string) ([]string, error) {
+	settings, _ := ath["sportSettings"].([]any)
+	var groups [][]string
+	for _, raw := range settings {
+		if s, ok := raw.(map[string]any); ok {
+			groups = append(groups, stringList(s, "types"))
+		}
+	}
+	var out []string
+	for _, sport := range sports {
+		found := false
+		for _, g := range groups {
+			if slices.ContainsFunc(g, func(t string) bool { return strings.EqualFold(t, sport) }) {
+				found = true
+				for _, t := range g {
+					if !slices.Contains(out, t) {
+						out = append(out, t)
+					}
+				}
+			}
+		}
+		if !found {
+			names := make([]string, len(groups))
+			for i, g := range groups {
+				names[i] = strings.Join(g, "/")
+			}
+			return nil, usagef("no sport settings cover %q (the athlete's sports: %s); use --type %s to match that type alone", sport, strings.Join(names, ", "), sport)
+		}
+	}
+	return out, nil
+}
+
 func activityLine(o icu.Object) string {
 	date := icu.Str(o, "start_date_local")
 	if len(date) >= 16 {
@@ -367,13 +402,19 @@ func activityLine(o icu.Object) string {
 
 func (a *App) icuActivitiesCmd() *cobra.Command {
 	var r dateRange
-	var types, fields []string
+	var types, sports, fields []string
 	var asCSV bool
 	cmd := &cobra.Command{
 		Use:   "activities",
 		Short: "Completed activities in a date range (training history, CSV export)",
+		Long: `Completed activities, oldest first. --type matches activity types exactly:
+--type Run leaves out treadmill (VirtualRun) and trail runs (TrailRun).
+--sport Run takes every type the athlete's Run sport settings cover, as
+icu profile lists them (e.g. Run/VirtualRun/TrailRun). --type and --sport
+combine: --sport Run --type Walk is all runs plus walks.`,
 		Example: `  coachctl icu activities --days 14
-  coachctl icu activities --since 2026-06-01 --type Run --csv > data/runs.csv
+  coachctl icu activities --since 2026-06-01 --sport Run --csv > data/runs.csv
+  coachctl icu activities --days 28 --type VirtualRide
   coachctl icu activities --days 7 --fields id,name,decoupling,icu_efficiency_factor --json`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -385,8 +426,20 @@ func (a *App) icuActivitiesCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			ctx := context.Background()
+			if len(sports) > 0 {
+				ath, err := c.Athlete(ctx)
+				if err != nil {
+					return err
+				}
+				family, err := sportTypes(ath, sports)
+				if err != nil {
+					return err
+				}
+				types = withFields(types, family...)
+			}
 			// The API returns only the named fields: keep the id for --json,
-			// and fetch type when --type filters on it.
+			// and fetch type when --type or --sport filters on it.
 			keep := fields
 			if len(fields) > 0 {
 				keep = withFields(fields, "id")
@@ -394,7 +447,7 @@ func (a *App) icuActivitiesCmd() *cobra.Command {
 					keep = withFields(keep, "type")
 				}
 			}
-			rows, err := c.Activities(context.Background(), since, until, keep)
+			rows, err := c.Activities(ctx, since, until, keep)
 			if err != nil {
 				return err
 			}
@@ -412,8 +465,14 @@ func (a *App) icuActivitiesCmd() *cobra.Command {
 				}
 				return a.printJSON(nonNil(rows))
 			}
+			// Name the types in the text output: --sport expands to types the
+			// caller never typed.
+			of := ""
+			if len(types) > 0 {
+				of = " of type " + strings.Join(types, "/")
+			}
 			if len(rows) == 0 {
-				a.printf("No activities %s – %s.\n", since, until)
+				a.printf("No activities%s %s – %s.\n", of, since, until)
 				return nil
 			}
 			var dist, secs, load float64
@@ -424,12 +483,13 @@ func (a *App) icuActivitiesCmd() *cobra.Command {
 				l, _ := icu.Num(o, "icu_training_load")
 				dist, secs, load = dist+d, secs+t, load+l
 			}
-			a.printf("\n%d activities %s – %s: %.1f km, %s, load %.0f\n", len(rows), since, until, dist/1000, icu.Duration(secs), load)
+			a.printf("\n%d activities%s %s – %s: %.1f km, %s, load %.0f\n", len(rows), of, since, until, dist/1000, icu.Duration(secs), load)
 			return nil
 		},
 	}
 	r.flags(cmd, 7)
-	cmd.Flags().StringSliceVar(&types, "type", nil, "only these activity types, e.g. Run,Ride,WeightTraining")
+	cmd.Flags().StringSliceVar(&types, "type", nil, "only these activity types, matched exactly, e.g. Run,VirtualRun,WeightTraining")
+	cmd.Flags().StringSliceVar(&sports, "sport", nil, "every type the athlete's sport settings group with these, e.g. Run for Run/VirtualRun/TrailRun")
 	cmd.Flags().StringSliceVar(&fields, "fields", nil, "fields to return (API names; see references/intervals.md); --json always keeps id")
 	cmd.Flags().BoolVar(&asCSV, "csv", false, "RFC 4180 CSV with a header row")
 	return cmd
@@ -1133,7 +1193,10 @@ func (a *App) icuSummaryCmd() *cobra.Command {
 		Use:   "summary",
 		Short: "Weekly totals: count, distance, time, load, fitness at week end",
 		Long: `One row per week (date = the week's Monday) with totals and the fitness model.
---type limits the totals to one sport, from the per-category breakdown.`,
+--type limits the totals to one category of Intervals' weekly breakdown, and
+the categories already group related types: Run counts VirtualRun too, Ride
+counts VirtualRide and GravelRide, Workout counts WeightTraining. A type that
+is not a category of its own (WeightTraining) totals zero.`,
 		Example: `  coachctl icu summary --days 84
   coachctl icu summary --since 2026-01-01 --type Run --csv > data/run_weeks.csv`,
 		Args: cobra.NoArgs,
@@ -1179,7 +1242,7 @@ func (a *App) icuSummaryCmd() *cobra.Command {
 	}
 	r.flags(cmd, 56)
 	cmd.Flags().BoolVar(&asCSV, "csv", false, "RFC 4180 CSV with a header row")
-	cmd.Flags().StringVar(&sport, "type", "", "totals for one activity type, e.g. Run")
+	cmd.Flags().StringVar(&sport, "type", "", "totals for one category, e.g. Run (VirtualRun included)")
 	return cmd
 }
 

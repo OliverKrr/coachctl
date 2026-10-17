@@ -54,12 +54,12 @@ record write in a session.
 | Commitments and flags                            | `item add --kind commitment\|flag [--date D] [--dedup-key K]`, `item list [--overdue]` |
 | A number measured again and again                | `metric record <series> <value> [--at D]`, `metric get <series>`, `metric list` |
 | Athlete thresholds, zones, today's date          | `icu profile`                                               |
-| What was trained                                 | `icu activities [--days N \| --since D] [--type Run]`, `icu activity <id>` (intervals with offsets, GAP, running dynamics) |
+| What was trained                                 | `icu activities [--days N \| --since D] [--sport Run]` (`--type` matches one type exactly), `icu activity <id>` (intervals with offsets, GAP, running dynamics) |
 | Readiness inputs (HRV, resting HR, sleep)        | `icu wellness`, `icu fitness`                               |
 | Load projection, taper                           | `icu fitness --since D --until D --json` (unrounded CTL/ATL, the day's load) |
 | New thresholds after a test                      | `icu settings set --type Run [--threshold-pace m:ss] [--lthr N] [--ftp N] --dry-run` |
 | What is planned                                  | `icu events --since D --days N`, `icu week [--date D]`      |
-| Weekly volume trend                              | `icu summary --days 84 [--type Run]`                        |
+| Weekly volume trend                              | `icu summary --days 84 [--type Run]` (a category: Run counts VirtualRun) |
 | Per-second data for a script                     | `icu streams <id> > data/<file>.csv`                        |
 | An endpoint without a command                    | `icu get <path> [--query k=v]` (read-only)                  |
 | Strength log and progression                     | `hevy workouts [--since D]`, `hevy history "<exact title>"` |
