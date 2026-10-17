@@ -1,0 +1,30 @@
+# Release build: `git tag vX.Y.Z && git push origin vX.Y.Z` runs .github/workflows/release.yml.
+version: 2
+project_name: coachctl
+
+builds:
+  - main: ./cmd/coachctl
+    binary: coachctl
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  # Raw binaries: one download plus a checksum check installs coachctl, no unpacking.
+  - formats: [binary]
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github-native
+
+release:
+  github:
+    owner: OliverKrr
+    name: coachctl

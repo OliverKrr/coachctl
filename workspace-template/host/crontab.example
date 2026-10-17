@@ -1,0 +1,13 @@
+# Derived from coaching-mcp v3.9.2 (workspace-template/host/crontab.example), MIT.
+# Install with `crontab -e` as the workspace user. Replace /path/to/workspace and /path/to/autosave.sh.
+# Times are in the system timezone (`timedatectl`). Debian's cron ignores CRON_TZ, so set the system
+# timezone to the user's instead of relying on it. cron's PATH is minimal: set COACHCTL_BIN and
+# CLAUDE_BIN in scripts/routines/config.env to absolute paths.
+
+# Safety net: commit and push what a dead session left behind (only when the repo has a remote).
+*/30 * * * * /path/to/autosave.sh /path/to/workspace >/dev/null 2>&1
+
+# One line per routine; the name is a prompt file scripts/routines/<name>.md. Space starts a few
+# minutes apart.
+# 45 7 * * *  /path/to/workspace/scripts/run_routine.sh readiness
+# 0 18 * * 0  /path/to/workspace/scripts/run_routine.sh weekly-review

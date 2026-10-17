@@ -1,0 +1,18 @@
+.venv/
+.env
+__pycache__/
+*.pyc
+.ruff_cache/
+.DS_Store
+.claude/settings.local.json
+# Remote Control in worktree mode puts session checkouts inside the repo.
+.claude/worktrees/
+
+# Transient exports and artefacts: keep the directories, drop the contents.
+data/*
+!data/.gitkeep
+out/*
+!out/.gitkeep
+
+# healthchecks.io ping URLs are write capabilities.
+healthchecks.env

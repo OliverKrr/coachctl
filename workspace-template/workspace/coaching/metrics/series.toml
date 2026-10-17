@@ -1,0 +1,16 @@
+# Metric series definitions. One table per series; `coachctl doctor` validates this file.
+#
+#   kind              "state": a new value supersedes the previous one (FTP, thresholds, baselines)
+#                     "event": values accumulate (weekly volume, adherence)
+#   unit              optional; every point of the series uses it
+#   stale_after_days  state series only: flag the current value at session start after this long
+#   description       optional
+#
+# Add a series with `coachctl metric define <name> --kind state|event`, or by hand below. Points
+# live in <name>.jsonl next to this file and are written only by `coachctl metric record`.
+#
+# [ftp]
+# kind = "state"
+# unit = "W"
+# stale_after_days = 120
+# description = "Cycling FTP from a ramp or 20-minute test"

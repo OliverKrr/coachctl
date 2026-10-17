@@ -1,0 +1,38 @@
+# Copied from coaching-mcp v3.9.2 (workspace-template/host/claude-remote-control.service), MIT.
+# The PATH below must include the directory that holds coachctl.
+# Claude Code Remote Control server: lets the Claude app on a phone (same claude.ai account as the
+# CLI login) open sessions in the workspace. Outbound HTTPS only, no inbound ports.
+#
+# Install as /etc/systemd/system/claude-remote-control.service after filling the at-sign
+# placeholders below (the claude path is absolute; the name is the device name shown in the app).
+# Prerequisite, once and interactively as the service user: `claude` in the workspace, /login,
+# accept the trust dialog there; then `claude remote-control --name <device> --spawn same-dir`,
+# answer the consent prompt with y, wait for "Connected", Ctrl+C. The unit cannot answer prompts.
+
+[Unit]
+Description=Claude Code Remote Control server (@USER@)
+After=network-online.target
+Wants=network-online.target
+# A silent no-op until the one-time login exists.
+ConditionPathExists=@HOME@/.claude/.credentials.json
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@WORKSPACE@
+Environment=HOME=@HOME@
+Environment=PATH=@HOME@/.local/bin:@HOME@/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
+# --spawn must be explicit: without it the CLI asks interactively and exits under systemd.
+# same-dir: every session shares the main checkout (its .env, .venv and hooks).
+ExecStart=@CLAUDE@ remote-control --name @NAME@ --capacity 3 --spawn same-dir
+# Server mode exits after ~10 min offline; retry forever, gently.
+Restart=always
+RestartSec=60
+# Do NOT add NoNewPrivileges=true: it strips setgid from /usr/bin/crontab, and sessions can then
+# no longer edit their own crontab. Do not set DISABLE_TELEMETRY, DO_NOT_TRACK or
+# CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC here either: they disable Remote Control.
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

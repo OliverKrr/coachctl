@@ -1,0 +1,52 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(coachctl session *)",
+      "Bash(coachctl journal *)",
+      "Bash(coachctl item *)",
+      "Bash(coachctl metric *)",
+      "Bash(coachctl icu profile*)",
+      "Bash(coachctl icu activities*)",
+      "Bash(coachctl icu activity *)",
+      "Bash(coachctl icu streams *)",
+      "Bash(coachctl icu wellness*)",
+      "Bash(coachctl icu fitness*)",
+      "Bash(coachctl icu events*)",
+      "Bash(coachctl icu week*)",
+      "Bash(coachctl icu summary*)",
+      "Bash(coachctl icu get *)",
+      "Bash(coachctl hevy workouts*)",
+      "Bash(coachctl hevy workout *)",
+      "Bash(coachctl hevy history *)",
+      "Bash(coachctl hevy templates *)",
+      "Bash(coachctl hevy routines*)",
+      "Bash(coachctl hevy folders*)",
+      "Bash(coachctl doctor*)",
+      "Bash(coachctl setup)",
+      "Bash(coachctl --version)"
+    ],
+    "ask": [
+      "Bash(coachctl icu workout *)",
+      "Bash(coachctl hevy routine create*)"
+    ],
+    "deny": [
+      "Edit(/coaching/**/*.jsonl)",
+      "Write(/coaching/**/*.jsonl)",
+      "Edit(/coaching/journal/**)",
+      "Write(/coaching/journal/**)"
+    ]
+  },
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"systemMessage\":\"Context is about to be compacted: run the capture skill for durable findings before detail is compressed.\"}'",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

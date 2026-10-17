@@ -1,0 +1,4 @@
+/dist/
+/coachctl
+*.test
+.DS_Store
