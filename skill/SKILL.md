@@ -62,13 +62,14 @@ record write in a session.
 | An endpoint without a command                    | `icu get <path> [--query k=v]` (read-only)                  |
 | Strength log and progression                     | `hevy workouts [--since D]`, `hevy history "<exact title>"` |
 | Find an exercise template id                     | `hevy templates search <words>`                             |
+| Adjust an existing routine                       | `hevy routine show <id> --json`, edit, `hevy routine update <id>` |
 | Push to the athlete's phone                      | `notify` (stdin, max 4096 characters)                       |
 | Something is misconfigured                       | `doctor [--online]`                                         |
 
 Intervals.icu field meanings, units, dates and the workout text format are in
 [references/intervals.md](references/intervals.md); open it before analysing activities or
 writing a workout description. Hevy's routine format is in
-[references/hevy.md](references/hevy.md); open it before `hevy routine create`.
+[references/hevy.md](references/hevy.md); open it before creating or updating a routine.
 
 ## Output, errors, scripts
 
@@ -83,7 +84,8 @@ writing a workout description. Hevy's routine format is in
 
 ## External writes
 
-`icu workout push|edit|delete`, `hevy routine create` and `notify` reach outside the record.
+`icu workout push|edit|delete`, `hevy routine create|update`, `hevy workout create` and `notify` reach
+outside the record.
 
 1. Run the command with `--dry-run` first and read what it would send.
 2. In an interactive session, ask the athlete before the real call unless the record's tier table

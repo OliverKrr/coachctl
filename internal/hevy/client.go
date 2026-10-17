@@ -233,6 +233,44 @@ func (c *Client) CreateRoutine(ctx context.Context, routine Object) (Object, err
 	return firstRoutine(out), nil
 }
 
+// Routine fetches one routine.
+func (c *Client) Routine(ctx context.Context, id string) (Object, error) {
+	var out any
+	if err := c.do(ctx, http.MethodGet, "/routines/"+url.PathEscape(id), nil, &out); err != nil {
+		return nil, err
+	}
+	return firstRoutine(out), nil
+}
+
+// UpdateRoutine replaces a routine's title, notes and exercise list.
+func (c *Client) UpdateRoutine(ctx context.Context, id string, routine Object) (Object, error) {
+	var out any
+	if err := c.do(ctx, http.MethodPut, "/routines/"+url.PathEscape(id), Object{"routine": routine}, &out); err != nil {
+		return nil, err
+	}
+	return firstRoutine(out), nil
+}
+
+// CreateWorkout logs a completed workout.
+func (c *Client) CreateWorkout(ctx context.Context, workout Object) (Object, error) {
+	var out any
+	if err := c.do(ctx, http.MethodPost, "/workouts", Object{"workout": workout}, &out); err != nil {
+		return nil, err
+	}
+	if m, ok := out.(map[string]any); ok {
+		if w, ok := m["workout"].([]any); ok && len(w) > 0 {
+			if o, ok := w[0].(map[string]any); ok {
+				return o, nil
+			}
+		}
+		if w, ok := m["workout"].(map[string]any); ok {
+			return w, nil
+		}
+		return m, nil
+	}
+	return Object{}, nil
+}
+
 // firstRoutine unwraps {"routine": [...]} / {"routine": {...}} responses.
 func firstRoutine(v any) Object {
 	m, ok := v.(map[string]any)

@@ -93,7 +93,8 @@ allows the record and read commands, and asks before external writes.
 | Metrics | `metric define`, `record <series> <value>`, `get <series> [--as-of] [--all]`, `list`, `stale`, `delete <id>` |
 | ICU     | `icu profile\|activities\|activity\|streams\|wellness\|fitness\|events\|week\|summary`, `icu get <path>` |
 | ICU (w) | `icu workout push\|edit\|delete` (`--dry-run`)                                           |
-| Hevy    | `hevy workouts\|workout\|history\|routines\|folders`, `hevy templates search`, `hevy routine create` (`--dry-run`) |
+| Hevy    | `hevy workouts\|workout\|history\|routines\|folders`, `hevy templates search`, `hevy routine show` |
+| Hevy (w) | `hevy routine create\|update`, `hevy workout create` (`--dry-run`)                     |
 | Notify  | `notify` (stdin, Telegram, `--dry-run`)                                                  |
 | Setup   | `setup`, `init <dir>`, `skill install`, `doctor [--online]`, `import <coaching-mcp snapshot>` |
 

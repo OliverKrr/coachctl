@@ -34,8 +34,8 @@ func (a *App) hevyCmd() *cobra.Command {
 API needs Hevy Pro). The routine format is in the coachctl skill,
 references/hevy.md.`,
 	}
-	routine := &cobra.Command{Use: "routine", Short: "Create routines"}
-	routine.AddCommand(a.hevyRoutineCreateCmd())
+	routine := &cobra.Command{Use: "routine", Short: "Show, create and update routines"}
+	routine.AddCommand(a.hevyRoutineShowCmd(), a.hevyRoutineCreateCmd(), a.hevyRoutineUpdateCmd())
 	templates := &cobra.Command{Use: "templates", Short: "Search the exercise-template catalog"}
 	templates.AddCommand(a.hevyTemplatesSearchCmd())
 	cmd.AddCommand(a.hevyWorkoutsCmd(), a.hevyWorkoutCmd(), a.hevyHistoryCmd(), templates, a.hevyRoutinesCmd(), a.hevyFoldersCmd(), routine)
@@ -148,9 +148,9 @@ func (a *App) hevyWorkoutsCmd() *cobra.Command {
 }
 
 func (a *App) hevyWorkoutCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "workout <id>",
-		Short: "One workout with every set",
+		Short: "One workout with every set (or `workout create` to log one)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := a.hevyClient()
@@ -168,6 +168,8 @@ func (a *App) hevyWorkoutCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.AddCommand(a.hevyWorkoutCreateCmd())
+	return cmd
 }
 
 var templateIDRe = regexp.MustCompile(`^[0-9A-Fa-f]{8}$|^[0-9a-f-]{36}$`)
@@ -465,6 +467,187 @@ EOF`,
 				return a.printJSON(out)
 			}
 			a.printf("Created routine %s: %s\n", hevy.Str(out, "id"), hevy.Str(out, "title"))
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "validate and print the request, send nothing")
+	return cmd
+}
+
+// readJSONObject reads one JSON object from stdin, unwrapping {"<key>": {...}}.
+func (a *App) readJSONObject(what, key string) (hevy.Object, error) {
+	raw, err := a.readStdin(what)
+	if err != nil {
+		return nil, err
+	}
+	var obj hevy.Object
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return nil, usagef("stdin is not one JSON object: %v", err)
+	}
+	if inner, ok := obj[key].(map[string]any); ok {
+		obj = inner
+	}
+	return obj, nil
+}
+
+func (a *App) hevyRoutineShowCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "show <id>",
+		Short: "One routine with its exercises and sets (the starting point for an update)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := a.hevyClient()
+			if err != nil {
+				return err
+			}
+			r, err := c.Routine(context.Background(), args[0])
+			if err != nil {
+				return err
+			}
+			if a.JSON {
+				return a.printJSON(r)
+			}
+			a.printf("%s  %s  folder %s\n", hevy.Str(r, "id"), hevy.Str(r, "title"), hevy.Str(r, "folder_id"))
+			exercises, _ := r["exercises"].([]any)
+			for _, raw := range exercises {
+				e, ok := raw.(map[string]any)
+				if !ok {
+					continue
+				}
+				sets, _ := e["sets"].([]any)
+				lines := make([]string, 0, len(sets))
+				for _, rs := range sets {
+					if s, ok := rs.(map[string]any); ok {
+						line := setLine(s)
+						if rr, ok := s["rep_range"].(map[string]any); ok {
+							line += fmt.Sprintf(" (%s-%s reps)", hevy.Str(rr, "start"), hevy.Str(rr, "end"))
+						}
+						lines = append(lines, line)
+					}
+				}
+				a.printf("  %s [%s]: %s\n", hevy.Str(e, "title"), hevy.Str(e, "exercise_template_id"), strings.Join(lines, ", "))
+			}
+			return nil
+		},
+	}
+}
+
+func (a *App) hevyRoutineUpdateCmd() *cobra.Command {
+	var dryRun bool
+	cmd := &cobra.Command{
+		Use:   "update <id>",
+		Short: "Replace a routine's title, notes and exercises (JSON on stdin)",
+		Long: `Update a routine. The exercise list is REPLACED, not merged: start from
+` + "`coachctl hevy routine show <id> --json`" + `, change it, and send the whole routine. Include
+folder_id only to move the routine (null means the default folder). A null rep_range is
+dropped, because the API rejects it on update.`,
+		Example: `  coachctl hevy routine show 3f1c… --json > data/routine.json   # edit, then:
+  coachctl hevy routine update 3f1c… --dry-run < data/routine.json`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			routine, err := a.readJSONObject("the routine JSON", "routine")
+			if err != nil {
+				return err
+			}
+			// Fields the API returns but does not accept back.
+			for _, k := range []string{"id", "created_at", "updated_at", "index"} {
+				delete(routine, k)
+			}
+			if exercises, ok := routine["exercises"].([]any); ok {
+				for _, raw := range exercises {
+					e, ok := raw.(map[string]any)
+					if !ok {
+						continue
+					}
+					delete(e, "index")
+					delete(e, "title")
+					sets, _ := e["sets"].([]any)
+					for _, rs := range sets {
+						if s, ok := rs.(map[string]any); ok {
+							delete(s, "index")
+							if v, has := s["rep_range"]; has && v == nil {
+								delete(s, "rep_range")
+							}
+						}
+					}
+				}
+			}
+			if err := validateRoutine(routine); err != nil {
+				return err
+			}
+			if dryRun {
+				return a.dryRun("PUT", "/routines/"+args[0], hevy.Object{"routine": routine})
+			}
+			c, err := a.hevyClient()
+			if err != nil {
+				return err
+			}
+			out, err := c.UpdateRoutine(context.Background(), args[0], routine)
+			if err != nil {
+				return err
+			}
+			if a.JSON {
+				return a.printJSON(out)
+			}
+			a.printf("Updated routine %s: %s\n", hevy.Str(out, "id"), hevy.Str(out, "title"))
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "validate and print the request, send nothing")
+	return cmd
+}
+
+func (a *App) hevyWorkoutCreateCmd() *cobra.Command {
+	var dryRun bool
+	cmd := &cobra.Command{
+		Use:   "create",
+		Short: "Log a completed workout (JSON on stdin)",
+		Long: `Log a workout that already happened: title, start_time and end_time (ISO 8601),
+optional description, and exercises with exercise_template_id and sets (type, weight_kg,
+reps, rpe, distance_meters, duration_seconds). It appears in the athlete's log and may sync
+on to other platforms, so log only what was actually done.`,
+		Example: `  coachctl hevy workout create --dry-run <<'EOF'
+{"title": "Kraft A", "start_time": "2026-10-17T17:00:00Z", "end_time": "2026-10-17T17:50:00Z",
+ "exercises": [{"exercise_template_id": "07B38369",
+   "sets": [{"type": "normal", "weight_kg": 20, "reps": 10, "rpe": 8}]}]}
+EOF`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			w, err := a.readJSONObject("the workout JSON", "workout")
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(hevy.Str(w, "title")) == "" || hevy.Str(w, "start_time") == "" || hevy.Str(w, "end_time") == "" {
+				return usagef("workout.title, start_time and end_time are required")
+			}
+			exercises, ok := w["exercises"].([]any)
+			if !ok || len(exercises) == 0 {
+				return usagef("workout.exercises needs at least one exercise")
+			}
+			for i, raw := range exercises {
+				e, ok := raw.(map[string]any)
+				if !ok || hevy.Str(e, "exercise_template_id") == "" {
+					return usagef("exercises[%d].exercise_template_id is required", i)
+				}
+				if sets, ok := e["sets"].([]any); !ok || len(sets) == 0 {
+					return usagef("exercises[%d].sets needs at least one set", i)
+				}
+			}
+			if dryRun {
+				return a.dryRun("POST", "/workouts", hevy.Object{"workout": w})
+			}
+			c, err := a.hevyClient()
+			if err != nil {
+				return err
+			}
+			out, err := c.CreateWorkout(context.Background(), w)
+			if err != nil {
+				return err
+			}
+			if a.JSON {
+				return a.printJSON(out)
+			}
+			a.printf("Logged workout %s: %s\n", hevy.Str(out, "id"), hevy.Str(out, "title"))
 			return nil
 		},
 	}

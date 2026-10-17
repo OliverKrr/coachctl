@@ -17,6 +17,7 @@
       "Bash(coachctl icu get *)",
       "Bash(coachctl hevy workouts*)",
       "Bash(coachctl hevy workout *)",
+      "Bash(coachctl hevy routine show *)",
       "Bash(coachctl hevy history *)",
       "Bash(coachctl hevy templates *)",
       "Bash(coachctl hevy routines*)",
@@ -27,7 +28,9 @@
     ],
     "ask": [
       "Bash(coachctl icu workout *)",
-      "Bash(coachctl hevy routine create*)"
+      "Bash(coachctl hevy routine create*)",
+      "Bash(coachctl hevy routine update*)",
+      "Bash(coachctl hevy workout create*)"
     ],
     "deny": [
       "Edit(/coaching/**/*.jsonl)",

@@ -295,6 +295,14 @@ func TestHevy(t *testing.T) {
 		case r.URL.Path == "/routines" && r.Method == http.MethodPost:
 			_ = json.NewDecoder(r.Body).Decode(&created)
 			_, _ = io.WriteString(w, `{"routine":[{"id":"r-1","title":"Kraft A (KW43)"}]}`)
+		case r.URL.Path == "/routines/r-1" && r.Method == http.MethodGet:
+			_, _ = io.WriteString(w, `{"routine":{"id":"r-1","title":"Kraft A","folder_id":7,"exercises":[{"index":0,"title":"Bulgarian Split Squat","exercise_template_id":"BBBB2222","sets":[{"index":0,"type":"normal","weight_kg":20,"reps":null,"rep_range":{"start":8,"end":10}}]}]}}`)
+		case r.URL.Path == "/routines/r-1" && r.Method == http.MethodPut:
+			_ = json.NewDecoder(r.Body).Decode(&created)
+			_, _ = io.WriteString(w, `{"routine":[{"id":"r-1","title":"Kraft A v2"}]}`)
+		case r.URL.Path == "/workouts" && r.Method == http.MethodPost:
+			_ = json.NewDecoder(r.Body).Decode(&created)
+			_, _ = io.WriteString(w, `{"workout":[{"id":"w-9","title":"Kraft A"}]}`)
 		default:
 			t.Errorf("unexpected %s %s", r.Method, r.URL)
 			w.WriteHeader(http.StatusNotFound)
@@ -330,6 +338,35 @@ func TestHevy(t *testing.T) {
 	}
 	if r, _ := created["routine"].(map[string]any); r["title"] != "Kraft A (KW43)" {
 		t.Errorf("created body = %+v", created)
+	}
+
+	if out := e.ok("", "hevy", "routine", "show", "r-1"); !strings.Contains(out, "Bulgarian Split Squat [BBBB2222]: 20 kg (8-10 reps)") {
+		t.Errorf("routine show:\n%s", out)
+	}
+	shown := e.ok("", "hevy", "routine", "show", "r-1", "--json")
+	edited := strings.Replace(shown, `"Kraft A"`, `"Kraft A v2"`, 1)
+	edited = strings.Replace(edited, `"rep_range": {`, `"rep_range_was": {`, 1)
+	edited = strings.Replace(edited, `"rep_range_was": {`, `"rep_range": null, "x": {`, 1)
+	created = nil
+	if out := e.ok(edited, "hevy", "routine", "update", "r-1"); !strings.Contains(out, "Updated routine r-1") {
+		t.Errorf("routine update:\n%s", out)
+	}
+	sent, _ := created["routine"].(map[string]any)
+	ex := sent["exercises"].([]any)[0].(map[string]any)
+	set := ex["sets"].([]any)[0].(map[string]any)
+	if _, has := sent["id"]; has || ex["title"] != nil || ex["index"] != nil || set["index"] != nil {
+		t.Errorf("update must strip fields the API does not accept back: %+v", sent)
+	}
+	if _, has := set["rep_range"]; has || sent["title"] != "Kraft A v2" {
+		t.Errorf("a null rep_range must be dropped on update: %+v", set)
+	}
+
+	workout := `{"title":"Kraft A","start_time":"2026-10-17T17:00:00Z","end_time":"2026-10-17T17:50:00Z","exercises":[{"exercise_template_id":"BBBB2222","sets":[{"type":"normal","weight_kg":20,"reps":10,"rpe":8}]}]}`
+	if _, errOut, code := e.run(`{"title":"x"}`, "hevy", "workout", "create"); code != ExitUsage || !strings.Contains(errOut, "start_time") {
+		t.Errorf("incomplete workout: %d %q", code, errOut)
+	}
+	if out := e.ok(workout, "hevy", "workout", "create"); !strings.Contains(out, "Logged workout w-9") {
+		t.Errorf("workout create:\n%s", out)
 	}
 }
 
