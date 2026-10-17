@@ -1361,11 +1361,10 @@ EOF`,
 			}
 			startTime := "00:00:00"
 			if at != "" {
-				t, err := time.Parse("15:04", at)
-				if err != nil {
-					return usagef("--time %q must be HH:MM", at)
+				var err error
+				if startTime, err = startClock(at); err != nil {
+					return err
 				}
-				startTime = t.Format("15:04:05")
 			}
 			desc, err := a.readStdin("the workout description")
 			if err != nil {
@@ -1503,14 +1502,36 @@ const (
 	carbsHelp   = "fuelling target in grams of carbohydrate per hour, shown on the calendar"
 )
 
+// startClock turns --time HH:MM into the HH:MM:SS of an event's local start.
+func startClock(at string) (string, error) {
+	t, err := time.Parse("15:04", at)
+	if err != nil {
+		return "", usagef("--time %q must be HH:MM", at)
+	}
+	return t.Format("15:04:05"), nil
+}
+
+// splitLocal splits an event's start_date_local into its day and its time, midnight when it has none.
+func splitLocal(s string) (day, hhmmss string) {
+	day, hhmmss, _ = strings.Cut(s, "T")
+	if hhmmss == "" {
+		hhmmss = "00:00:00"
+	}
+	return day, hhmmss
+}
+
 func (a *App) icuWorkoutEditCmd() *cobra.Command {
-	var date, name, sport, weekday string
+	var date, at, name, sport, weekday string
 	var movingTime, load, carbs int
 	var fromStdin, dryRun bool
 	cmd := &cobra.Command{
 		Use:   "edit <event-id>",
-		Short: "Change a planned workout's date, name, type, description, load, duration or fuelling",
+		Short: "Change a planned workout's date, time, name, type, description, load, duration or fuelling",
+		Long: `Change a planned workout in place. --date moves it to another day and keeps its start time;
+--time changes the time and keeps the day (00:00 means no time). Either one alone reads the event
+first, so a session timed to sit before or after another on the same day keeps its place.`,
 		Example: `  coachctl icu workout edit 12345678 --date 2026-10-23 --weekday Fri
+  coachctl icu workout edit 12345678 --date 2026-10-23 --time 06:30
   coachctl icu workout edit 12345678 --load 45 --moving-time 3600 --carbs-per-hour 60
   coachctl icu workout edit 12345678 --description-stdin <<'EOF'
 - 45m Z2 Pace
@@ -1528,7 +1549,13 @@ EOF`,
 				if err := checkWeekday(date, weekday); err != nil {
 					return err
 				}
-				fields["start_date_local"] = date + "T00:00:00"
+			}
+			var startTime string
+			if at != "" {
+				var err error
+				if startTime, err = startClock(at); err != nil {
+					return err
+				}
 			}
 			if err := noNegatives(cmd, "moving-time", "load", "carbs-per-hour"); err != nil {
 				return err
@@ -1555,25 +1582,54 @@ EOF`,
 				}
 				fields["description"] = strings.TrimSpace(desc)
 			}
-			if len(fields) == 0 {
-				return usagef("nothing to change: pass --date, --name, --type, --load, --moving-time, --carbs-per-hour or --description-stdin")
+			if len(fields) == 0 && date == "" && at == "" {
+				return usagef("nothing to change: pass --date, --time, --name, --type, --load, --moving-time, --carbs-per-hour or --description-stdin")
+			}
+			ctx := context.Background()
+			var c *icu.Client
+			if date != "" || at != "" {
+				if date == "" || at == "" {
+					// Keep the half that was not given, so moving a timed session does not reset it to midnight.
+					var err error
+					if c, err = a.icuClient(); err != nil {
+						return err
+					}
+					ev, err := c.Event(ctx, args[0])
+					if err != nil {
+						return err
+					}
+					day, hhmmss := splitLocal(icu.Str(ev, "start_date_local"))
+					if date == "" {
+						if day == "" {
+							return fmt.Errorf("event %s has no date to keep: pass --date with --time", args[0])
+						}
+						date = day
+					}
+					if startTime == "" {
+						startTime = hhmmss
+					}
+				}
+				fields["start_date_local"] = date + "T" + startTime
 			}
 			path := "/athlete/{athlete}/events/" + url.PathEscape(args[0])
 			if dryRun {
 				return a.dryRun("PUT", path, fields)
 			}
-			c, err := a.icuClient()
-			if err != nil {
-				return err
+			if c == nil {
+				var err error
+				if c, err = a.icuClient(); err != nil {
+					return err
+				}
 			}
-			out, err := c.UpdateEvent(context.Background(), args[0], fields)
+			out, err := c.UpdateEvent(ctx, args[0], fields)
 			if err != nil {
 				return err
 			}
 			return a.reportEvent("Updated", out)
 		},
 	}
-	cmd.Flags().StringVar(&date, "date", "", "move to this day, YYYY-MM-DD")
+	cmd.Flags().StringVar(&date, "date", "", "move to this day, YYYY-MM-DD; the start time stays unless --time is given")
+	cmd.Flags().StringVar(&at, "time", "", "new start time HH:MM (00:00 for none); the day stays unless --date is given")
 	cmd.Flags().StringVar(&weekday, "weekday", "", weekdayHelp)
 	cmd.Flags().StringVar(&name, "name", "", "new name")
 	cmd.Flags().StringVar(&sport, "type", "", "new activity type")

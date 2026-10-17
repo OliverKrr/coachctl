@@ -235,6 +235,8 @@ func fakeICU(t *testing.T, posted *map[string]any) *httptest.Server {
 				t.Errorf("streams types = %s", r.URL.RawQuery)
 			}
 			_, _ = io.WriteString(w, `[{"type":"time","data":[0,1,2]},{"type":"stance_time","data":[251,null,253]}]`)
+		case r.URL.Path == "/athlete/i42/events/779" && r.Method == http.MethodGet:
+			_, _ = io.WriteString(w, `{"id":779,"category":"WORKOUT","start_date_local":"2026-10-20T07:30:00","type":"Ride","name":"Z2"}`)
 		case r.URL.Path == "/athlete/i42/events/779" && r.Method == http.MethodPut:
 			_ = json.NewDecoder(r.Body).Decode(posted)
 			_, _ = io.WriteString(w, `{"id":779,"category":"WORKOUT","start_date_local":"2026-10-22T00:00:00","type":"Ride","name":"Z2","icu_training_load":45,"carbs_per_hour":60,"workout_doc":{"steps":[{}]}}`)
@@ -369,8 +371,26 @@ func TestICU(t *testing.T) {
 	if !strings.Contains(edited, "Updated event 779") || !strings.Contains(edited, "carbs 60 g/h") {
 		t.Errorf("edit:\n%s", edited)
 	}
-	if posted["icu_training_load"] != 45.0 || posted["moving_time"] != 3600.0 || posted["carbs_per_hour"] != 60.0 || posted["start_date_local"] != "2026-10-22T00:00:00" {
+	// --date alone keeps the event's start time (07:30), so a timed session keeps its place in the day.
+	if posted["icu_training_load"] != 45.0 || posted["moving_time"] != 3600.0 || posted["carbs_per_hour"] != 60.0 || posted["start_date_local"] != "2026-10-22T07:30:00" {
 		t.Errorf("edit sent %+v", posted)
+	}
+	posted = nil
+	e.ok("", "icu", "workout", "edit", "779", "--time", "18:15")
+	if posted["start_date_local"] != "2026-10-20T18:15:00" || len(posted) != 1 {
+		t.Errorf("--time alone must keep the day and change only the start: %+v", posted)
+	}
+	posted = nil
+	e.ok("", "icu", "workout", "edit", "779", "--date", "2026-10-23", "--time", "00:00")
+	if posted["start_date_local"] != "2026-10-23T00:00:00" {
+		t.Errorf("--date with --time 00:00 sets midnight: %+v", posted)
+	}
+	if dry := e.ok("", "icu", "workout", "edit", "779", "--date", "2026-10-22", "--dry-run", "--json"); !strings.Contains(dry, `"start_date_local": "2026-10-22T07:30:00"`) {
+		t.Errorf("edit --date --dry-run must show the kept time:\n%s", dry)
+	}
+	posted = nil
+	if _, errOut, code := e.run("", "icu", "workout", "edit", "779", "--time", "7pm"); code != ExitUsage || !strings.Contains(errOut, "must be HH:MM") || posted != nil {
+		t.Errorf("bad --time: exit %d, %q, sent %+v", code, errOut, posted)
 	}
 	if _, errOut, code := e.run("", "icu", "workout", "edit", "779", "--load", "-5"); code != ExitUsage || !strings.Contains(errOut, "--load must not be negative") {
 		t.Errorf("negative load: exit %d, %q", code, errOut)

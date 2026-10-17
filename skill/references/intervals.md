@@ -215,7 +215,8 @@ zones, for a group of activity types (Run often covers VirtualRun and TrailRun t
 - A description without steps (a free-text session) needs `--moving-time` and `--load` (on push or
   edit), or the fitness forecast ignores it.
 - `--time HH:MM` on push gives the event a start time, which orders several sessions on one day;
-  without it the event sits at midnight.
+  without it the event sits at midnight. On edit, `--date` moves the event and keeps its time, and
+  `--time` changes the time and keeps the day (`--time 00:00` removes it).
 - **Check the weekday with the date.** Pass the plan's weekday with every `--date` on push and edit
   (`--date 2026-10-21 --weekday Wed`); coachctl refuses a date on another weekday before sending
   anything.
