@@ -4,14 +4,17 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/OliverKrr/coachctl/internal/apierr"
 	"github.com/OliverKrr/coachctl/internal/config"
 	"github.com/OliverKrr/coachctl/internal/icu"
 	"github.com/OliverKrr/coachctl/internal/store"
@@ -84,16 +87,17 @@ func (a *App) resolveRange(r dateRange) (string, string, error) {
 func (a *App) icuCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "icu",
-		Short: "Intervals.icu: profile, activities, wellness, fitness, calendar, workouts",
+		Short: "Intervals.icu: profile, activities, wellness, fitness, calendar, workouts, settings",
 		Long: `Read and write the athlete's Intervals.icu account with INTERVALS_API_KEY and
 INTERVALS_ATHLETE_ID. Reads are safe to run freely; ` + "`icu workout`" + ` writes to the
-calendar and supports --dry-run. Field meanings, units and the workout text
-format are in the coachctl skill's references/intervals.md.`,
+calendar and ` + "`icu settings set`" + ` to the sport settings, both with --dry-run.
+Field meanings, units and the workout text format are in the coachctl skill's
+references/intervals.md.`,
 	}
 	cmd.AddCommand(
 		a.icuProfileCmd(), a.icuActivitiesCmd(), a.icuActivityCmd(), a.icuStreamsCmd(),
 		a.icuWellnessCmd(), a.icuFitnessCmd(), a.icuEventsCmd(), a.icuWeekCmd(),
-		a.icuSummaryCmd(), a.icuWorkoutCmd(), a.icuGetCmd(),
+		a.icuSummaryCmd(), a.icuWorkoutCmd(), a.icuSettingsCmd(), a.icuGetCmd(),
 	)
 	return cmd
 }
@@ -506,20 +510,30 @@ func (a *App) printActivity(o icu.Object) {
 		}
 		a.printf("power zone times (Z1…): %s\n", zoneTimes(secs))
 	}
+	if dyn := runningDynamics(o); len(dyn) > 0 {
+		a.printf("running dynamics: %s\n", strings.Join(dyn, ", "))
+	}
 	if d := strings.TrimSpace(icu.Str(o, "description")); d != "" {
 		a.printf("description: %s\n", d)
 	}
-	intervals, _ := o["icu_intervals"].([]any)
+	raws, _ := o["icu_intervals"].([]any)
+	var intervals []icu.Object
+	for _, raw := range raws {
+		if iv, ok := raw.(map[string]any); ok {
+			intervals = append(intervals, iv)
+		}
+	}
 	if len(intervals) == 0 {
 		return
 	}
-	a.printf("\nintervals:\n")
-	for _, raw := range intervals {
-		iv, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
+	a.printf("\n%s\n", intervalSource(o, intervals))
+	for _, iv := range intervals {
 		parts := []string{fmt.Sprintf("%-8s", icu.Str(iv, "type"))}
+		start, ok1 := icu.Num(iv, "start_time")
+		end, ok2 := icu.Num(iv, "end_time")
+		if ok1 && ok2 {
+			parts = append(parts, clock(start)+"–"+clock(end))
+		}
 		if l := icu.Str(iv, "label"); l != "" {
 			parts = append(parts, l)
 		}
@@ -531,6 +545,9 @@ func (a *App) printActivity(o icu.Object) {
 		}
 		if v, ok := icu.Num(iv, "average_speed"); ok && v > 0 {
 			parts = append(parts, icu.Pace(v, false))
+		}
+		if v, ok := icu.Num(iv, "gap"); ok && v > 0 {
+			parts = append(parts, "GAP "+icu.Pace(v, false))
 		}
 		if w, ok := icu.Num(iv, "average_watts"); ok && w > 0 {
 			parts = append(parts, fmt.Sprintf("%.0f W", w))
@@ -544,8 +561,68 @@ func (a *App) printActivity(o icu.Object) {
 		if z, ok := icu.Num(iv, "zone"); ok && z > 0 {
 			parts = append(parts, fmt.Sprintf("Z%.0f", z))
 		}
+		parts = append(parts, runningDynamics(iv)...)
 		a.printf("  %s\n", strings.Join(parts, "  "))
 	}
+}
+
+// runningDynamics renders the running-dynamics averages an activity or
+// interval carries. Vertical oscillation and step length are shown as stored:
+// their unit depends on the recording device (references/intervals.md).
+func runningDynamics(o icu.Object) []string {
+	type field struct{ label, key, format string }
+	var out []string
+	for _, f := range []field{
+		{"GCT", "average_stance_time", "%.0f ms"},
+		{"GCT balance", "average_stance_time_balance", "%.1f%% L"},
+		{"VO", "average_vertical_oscillation", "%.1f"},
+		{"VR", "average_vertical_ratio", "%.1f%%"},
+		{"step", "average_step_length", "%.0f"},
+		{"LSS", "average_leg_spring_stiffness", "%.1f"},
+	} {
+		if v, ok := icu.Num(o, f.key); ok && v > 0 {
+			out = append(out, f.label+" "+fmt.Sprintf(f.format, v))
+		}
+	}
+	return out
+}
+
+// intervalSource says whether an activity's intervals follow the device's
+// laps or Intervals.icu's own detection. The API has no field for it (the
+// sport's laps setting at analysis time decides), so it compares counts:
+// lap-based intervals match the lap count give or take one, after dropping
+// the 1–2 s slivers that appear where laps meet.
+func intervalSource(o icu.Object, intervals []icu.Object) string {
+	if b, _ := o["icu_intervals_edited"].(bool); b {
+		return "intervals (edited by hand in Intervals.icu):"
+	}
+	laps, ok := icu.Num(o, "icu_lap_count")
+	if !ok {
+		return "intervals:"
+	}
+	n := 0
+	for _, iv := range intervals {
+		if t, ok := icu.Num(iv, "elapsed_time"); !ok || t > 2 {
+			n++
+		}
+	}
+	switch {
+	case laps <= 1:
+		return "intervals (detected by Intervals.icu; the device recorded no laps):"
+	case math.Abs(float64(n)-laps) <= 1:
+		return fmt.Sprintf("intervals (from the device's %.0f laps):", laps)
+	default:
+		return fmt.Sprintf("intervals (detected by Intervals.icu, not the device's %.0f laps):", laps)
+	}
+}
+
+// clock renders an offset in seconds as m:ss, or h:mm:ss from an hour on.
+func clock(secs float64) string {
+	s := int(math.Round(secs))
+	if s >= 3600 {
+		return fmt.Sprintf("%d:%02d:%02d", s/3600, s/60%60, s%60)
+	}
+	return fmt.Sprintf("%d:%02d", s/60, s%60)
 }
 
 func zoneTimes(secs []float64) string {
@@ -747,6 +824,9 @@ func withIDField(fields []string) []string {
 	return append([]string{"id"}, fields...)
 }
 
+// fitnessDay carries the model at full precision: projections that compound
+// CTL and ATL day by day drift when fed values rounded to 0.1. Text output
+// rounds.
 type fitnessDay struct {
 	Date     string   `json:"date"`
 	CTL      float64  `json:"ctl"`
@@ -754,15 +834,22 @@ type fitnessDay struct {
 	Form     float64  `json:"form"`
 	FormPct  *float64 `json:"form_pct,omitempty"`
 	RampRate *float64 `json:"ramp_rate,omitempty"`
+	Load     *float64 `json:"load,omitempty"`
 }
 
 func (a *App) icuFitnessCmd() *cobra.Command {
 	var r dateRange
 	cmd := &cobra.Command{
 		Use:   "fitness",
-		Short: "Fitness model per day: CTL (fitness), ATL (fatigue), form = CTL − ATL",
+		Short: "Fitness model per day: CTL (fitness), ATL (fatigue), form = CTL − ATL, the day's load",
+		Long: `One row per day from the wellness records: CTL, ATL, form = CTL − ATL, form as
+a share of CTL, ramp rate, and load, the day's training load as the model
+counted it (the wellness field ctlLoad). On today and later days that load
+includes planned workouts no activity has matched yet, which is what the
+forecast rows are built from. --json keeps CTL, ATL and form unrounded for
+projections; text rounds to 0.1.`,
 		Example: `  coachctl icu fitness
-  coachctl icu fitness --days 90 --json`,
+  coachctl icu fitness --since 2026-10-01 --until 2026-11-15 --json`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			since, until, err := a.resolveRange(r)
@@ -784,9 +871,9 @@ func (a *App) icuFitnessCmd() *cobra.Command {
 				if !ok1 || !ok2 {
 					continue
 				}
-				d := fitnessDay{Date: icu.Str(w, "id"), CTL: round1(ctl), ATL: round1(atl), Form: round1(ctl - atl), RampRate: optNum(w, "rampRate")}
+				d := fitnessDay{Date: icu.Str(w, "id"), CTL: ctl, ATL: atl, Form: ctl - atl, RampRate: optNum(w, "rampRate"), Load: optNum(w, "ctlLoad")}
 				if ctl > 0 {
-					pct := round1((ctl - atl) / ctl * 100)
+					pct := (ctl - atl) / ctl * 100
 					d.FormPct = &pct
 				}
 				days = append(days, d)
@@ -798,17 +885,22 @@ func (a *App) icuFitnessCmd() *cobra.Command {
 				a.printf("No fitness data %s – %s.\n", since, until)
 				return nil
 			}
+			r1 := func(v float64) string { return fmtValue(round1(v), "") }
 			last := days[len(days)-1]
-			a.printf("%s: fitness (CTL) %s, fatigue (ATL) %s, form %s", last.Date, fmtValue(last.CTL, ""), fmtValue(last.ATL, ""), fmtValue(last.Form, ""))
+			a.printf("%s: fitness (CTL) %s, fatigue (ATL) %s, form %s", last.Date, r1(last.CTL), r1(last.ATL), r1(last.Form))
 			if last.FormPct != nil {
-				a.printf(" (%s%%)", fmtValue(*last.FormPct, ""))
+				a.printf(" (%s%%)", r1(*last.FormPct))
 			}
 			if last.RampRate != nil {
-				a.printf(", ramp rate %s", fmtValue(round1(*last.RampRate), ""))
+				a.printf(", ramp rate %s", r1(*last.RampRate))
 			}
-			a.printf("\n\ndate        CTL    ATL    form\n")
+			a.printf("\n\ndate        CTL    ATL    form   load\n")
 			for _, d := range days {
-				a.printf("%s  %-5s  %-5s  %s\n", d.Date, fmtValue(d.CTL, ""), fmtValue(d.ATL, ""), fmtValue(d.Form, ""))
+				load := ""
+				if d.Load != nil {
+					load = fmt.Sprintf("%.0f", *d.Load)
+				}
+				a.printf("%s\n", strings.TrimRight(fmt.Sprintf("%s  %-5s  %-5s  %-5s  %s", d.Date, r1(d.CTL), r1(d.ATL), r1(d.Form), load), " "))
 			}
 			return nil
 		},
@@ -840,6 +932,9 @@ func eventLine(o icu.Object, withDescription bool) string {
 	}
 	if l, ok := icu.Num(o, "icu_training_load"); ok && l > 0 {
 		parts = append(parts, fmt.Sprintf("load %.0f", l))
+	}
+	if c, ok := icu.Num(o, "carbs_per_hour"); ok && c > 0 {
+		parts = append(parts, fmt.Sprintf("carbs %.0f g/h", c))
 	}
 	line := strings.Join(parts, "  ") + "  id " + icu.Str(o, "id")
 	if withDescription {
@@ -1110,14 +1205,56 @@ Intervals parses it into structured steps that sync to the watch.`,
 	return cmd
 }
 
+// parseWeekday reads Mon…Sun, or the full English name, in any case.
+func parseWeekday(s string) (time.Weekday, bool) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	for d := time.Sunday; d <= time.Saturday; d++ {
+		name := strings.ToLower(d.String())
+		if s == name || s == name[:3] {
+			return d, true
+		}
+	}
+	return 0, false
+}
+
+// checkWeekday refuses a date that does not fall on the weekday the plan
+// names, so an off-by-one date fails before anything is written.
+func checkWeekday(date, weekday string) error {
+	if weekday == "" {
+		return nil
+	}
+	want, ok := parseWeekday(weekday)
+	if !ok {
+		return usagef("--weekday %q must be one of Mon, Tue, Wed, Thu, Fri, Sat, Sun", weekday)
+	}
+	d, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		return usagef("--date %q must be YYYY-MM-DD", date)
+	}
+	if d.Weekday() != want {
+		return usagef("--date %s is a %s, not a %s (--weekday %s): nothing was sent; check which day the plan means", date, d.Weekday(), want, weekday)
+	}
+	return nil
+}
+
+// noNegatives rejects negative values of the named integer flags.
+func noNegatives(cmd *cobra.Command, names ...string) error {
+	for _, n := range names {
+		if v, err := cmd.Flags().GetInt(n); err == nil && v < 0 {
+			return usagef("--%s must not be negative", n)
+		}
+	}
+	return nil
+}
+
 func (a *App) icuWorkoutPushCmd() *cobra.Command {
-	var date, at, sport, name, externalID, category string
-	var movingTime, load int
+	var date, at, sport, name, externalID, category, weekday string
+	var movingTime, load, carbs int
 	var indoor, dryRun bool
 	cmd := &cobra.Command{
 		Use:   "push",
 		Short: "Create a planned workout (description on stdin)",
-		Example: `  coachctl icu workout push --date 2026-10-21 --type Run --name "6x1k" <<'EOF'
+		Example: `  coachctl icu workout push --date 2026-10-21 --weekday Wed --type Run --name "6x1k" <<'EOF'
 Warmup
 - 15m Z2 Pace
 
@@ -1128,16 +1265,22 @@ Warmup
 Cooldown
 - 10m Z2 Pace
 EOF
-  coachctl icu workout push --date 2026-10-22 --type Ride --name "Z2" --external-id plan-2026w43-wed --dry-run <<'EOF'
-- 60m 65-75%
+  coachctl icu workout push --date 2026-10-22 --weekday Thu --type Ride --name "Z2" --carbs-per-hour 60 --external-id plan-2026w43-thu --dry-run <<'EOF'
+- 2h 65-75%
 EOF`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if _, err := store.ParseDate(date); err != nil {
 				return err
 			}
+			if err := checkWeekday(date, weekday); err != nil {
+				return err
+			}
 			if name == "" || sport == "" {
 				return usagef("--name and --type are required")
+			}
+			if err := noNegatives(cmd, "moving-time", "load", "carbs-per-hour"); err != nil {
+				return err
 			}
 			startTime := "00:00:00"
 			if at != "" {
@@ -1160,6 +1303,9 @@ EOF`,
 			}
 			if load > 0 {
 				event["icu_training_load"] = load
+			}
+			if carbs > 0 {
+				event["carbs_per_hour"] = carbs
 			}
 			if indoor {
 				event["indoor"] = true
@@ -1203,12 +1349,14 @@ EOF`,
 		},
 	}
 	cmd.Flags().StringVar(&date, "date", "", "day of the workout, YYYY-MM-DD (required)")
+	cmd.Flags().StringVar(&weekday, "weekday", "", weekdayHelp)
 	cmd.Flags().StringVar(&at, "time", "", "start time HH:MM (default: no time)")
 	cmd.Flags().StringVar(&sport, "type", "", "activity type: Run, Ride, Swim, WeightTraining, … (required)")
 	cmd.Flags().StringVar(&name, "name", "", "workout name (required)")
 	cmd.Flags().StringVar(&category, "category", "WORKOUT", "event category: WORKOUT, NOTE, RACE_A, …")
 	cmd.Flags().IntVar(&movingTime, "moving-time", 0, "planned duration in seconds, when the description has no steps")
 	cmd.Flags().IntVar(&load, "load", 0, "planned training load, when Intervals cannot compute it")
+	cmd.Flags().IntVar(&carbs, "carbs-per-hour", 0, carbsHelp)
 	cmd.Flags().BoolVar(&indoor, "indoor", false, "mark as an indoor workout")
 	cmd.Flags().StringVar(&externalID, "external-id", "", "your stable key for this session: pushing a key already on the calendar updates that event instead of adding one")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the request, send nothing")
@@ -1273,30 +1421,55 @@ func (a *App) reportEvent(verb string, out icu.Object) error {
 	return nil
 }
 
+const (
+	weekdayHelp = "refuse the call unless --date falls on this weekday (Mon…Sun): catches an off-by-one date before anything is sent"
+	carbsHelp   = "fuelling target in grams of carbohydrate per hour, shown on the calendar"
+)
+
 func (a *App) icuWorkoutEditCmd() *cobra.Command {
-	var date, name, sport string
+	var date, name, sport, weekday string
+	var movingTime, load, carbs int
 	var fromStdin, dryRun bool
 	cmd := &cobra.Command{
 		Use:   "edit <event-id>",
-		Short: "Change a planned workout's date, name, type or description",
-		Example: `  coachctl icu workout edit 12345678 --date 2026-10-23
+		Short: "Change a planned workout's date, name, type, description, load, duration or fuelling",
+		Example: `  coachctl icu workout edit 12345678 --date 2026-10-23 --weekday Fri
+  coachctl icu workout edit 12345678 --load 45 --moving-time 3600 --carbs-per-hour 60
   coachctl icu workout edit 12345678 --description-stdin <<'EOF'
 - 45m Z2 Pace
 EOF`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fields := icu.Object{}
+			if weekday != "" && date == "" {
+				return usagef("--weekday checks --date: pass the new --date with it")
+			}
 			if date != "" {
 				if _, err := store.ParseDate(date); err != nil {
 					return err
 				}
+				if err := checkWeekday(date, weekday); err != nil {
+					return err
+				}
 				fields["start_date_local"] = date + "T00:00:00"
+			}
+			if err := noNegatives(cmd, "moving-time", "load", "carbs-per-hour"); err != nil {
+				return err
 			}
 			if name != "" {
 				fields["name"] = name
 			}
 			if sport != "" {
 				fields["type"] = sport
+			}
+			if cmd.Flags().Changed("moving-time") {
+				fields["moving_time"] = movingTime
+			}
+			if cmd.Flags().Changed("load") {
+				fields["icu_training_load"] = load
+			}
+			if cmd.Flags().Changed("carbs-per-hour") {
+				fields["carbs_per_hour"] = carbs
 			}
 			if fromStdin {
 				desc, err := a.readStdin("the new description")
@@ -1306,7 +1479,7 @@ EOF`,
 				fields["description"] = strings.TrimSpace(desc)
 			}
 			if len(fields) == 0 {
-				return usagef("nothing to change: pass --date, --name, --type or --description-stdin")
+				return usagef("nothing to change: pass --date, --name, --type, --load, --moving-time, --carbs-per-hour or --description-stdin")
 			}
 			path := "/athlete/{athlete}/events/" + url.PathEscape(args[0])
 			if dryRun {
@@ -1324,8 +1497,12 @@ EOF`,
 		},
 	}
 	cmd.Flags().StringVar(&date, "date", "", "move to this day, YYYY-MM-DD")
+	cmd.Flags().StringVar(&weekday, "weekday", "", weekdayHelp)
 	cmd.Flags().StringVar(&name, "name", "", "new name")
 	cmd.Flags().StringVar(&sport, "type", "", "new activity type")
+	cmd.Flags().IntVar(&movingTime, "moving-time", 0, "planned duration in seconds, when the description has no steps")
+	cmd.Flags().IntVar(&load, "load", 0, "planned training load, when Intervals cannot compute it")
+	cmd.Flags().IntVar(&carbs, "carbs-per-hour", 0, carbsHelp)
 	cmd.Flags().BoolVar(&fromStdin, "description-stdin", false, "replace the description with stdin")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the request, send nothing")
 	return cmd
@@ -1367,6 +1544,248 @@ func (a *App) icuWorkoutDeleteCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show the event, delete nothing")
 	return cmd
+}
+
+// settingField is one threshold `icu settings set` can change.
+type settingField struct{ flag, key, label, unit string }
+
+var settingFields = []settingField{
+	{"ftp", "ftp", "FTP", "W"},
+	{"threshold-pace", "threshold_pace", "threshold pace", ""},
+	{"lthr", "lthr", "LTHR", "bpm"},
+	{"max-hr", "max_hr", "max HR", "bpm"},
+	{"w-prime", "w_prime", "W'", "J"},
+}
+
+// guardedSettings are the fields a settings write must not touch unless asked.
+var guardedSettings = []string{"ftp", "indoor_ftp", "threshold_pace", "lthr", "max_hr", "w_prime", "power_zones", "pace_zones", "hr_zones"}
+
+type settingChange struct {
+	Field string   `json:"field"`
+	Old   *float64 `json:"old"`
+	New   float64  `json:"new"`
+}
+
+func (f settingField) show(v *float64, per100m bool) string {
+	switch {
+	case v == nil:
+		return "unset"
+	case f.key == "threshold_pace":
+		return icu.Pace(*v, per100m)
+	}
+	return fmtValue(*v, f.unit)
+}
+
+// parsePace reads m:ss per km (optionally with /km), or m:ss/100m, as m/s.
+func parsePace(s string) (float64, error) {
+	t := strings.ToLower(strings.TrimSpace(s))
+	dist := 1000.0
+	if strings.HasSuffix(t, "/100m") {
+		dist, t = 100, strings.TrimSuffix(t, "/100m")
+	}
+	t = strings.TrimSuffix(t, "/km")
+	m, sec, ok := strings.Cut(t, ":")
+	mi, err1 := strconv.Atoi(m)
+	se, err2 := strconv.Atoi(sec)
+	if !ok || err1 != nil || err2 != nil || len(sec) != 2 || mi < 0 || se < 0 || se > 59 || mi*60+se == 0 {
+		return 0, usagef("--threshold-pace %q must be m:ss per km (4:10 or 4:10/km), or m:ss/100m for swimming", s)
+	}
+	return dist / float64(mi*60+se), nil
+}
+
+func (a *App) icuSettingsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "settings",
+		Short: "Change a sport's thresholds: FTP, threshold pace, LTHR, max HR, W'",
+		Long:  "`coachctl icu profile` reads the settings; `icu settings set` changes them and\nsupports --dry-run.",
+	}
+	cmd.AddCommand(a.icuSettingsSetCmd())
+	return cmd
+}
+
+func (a *App) icuSettingsSetCmd() *cobra.Command {
+	var sport, pace string
+	var ftp, lthr, maxHR, wPrime int
+	var recalcHR, dryRun bool
+	cmd := &cobra.Command{
+		Use:   "set",
+		Short: "Set one sport's thresholds, showing old → new (--dry-run sends nothing)",
+		Long: `Changes the thresholds of the sport settings that cover --type, e.g. after a
+test. Only the fields you pass are sent. Power and pace zones are stored as
+percentages, so they move with FTP and threshold pace; HR zones are absolute
+bpm and keep their values unless --recalc-hr-zones has Intervals.icu recompute
+them from LTHR and max HR. Activities keep the thresholds they were analysed
+with.
+
+coachctl reads the settings before the write and compares them with what the
+write returns: if a threshold or zone it was not asked to change moved, it
+exits 1 and names it.`,
+		Example: `  coachctl icu settings set --type Run --threshold-pace 3:55 --lthr 168 --dry-run
+  coachctl icu settings set --type Ride --ftp 265
+  coachctl icu settings set --type Run --max-hr 189 --recalc-hr-zones`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if sport == "" {
+				return usagef("--type is required: the sport whose settings change, e.g. Run or Ride")
+			}
+			body := icu.Object{}
+			want := map[string]float64{}
+			for _, f := range []struct {
+				flag, key string
+				v         int
+			}{{"ftp", "ftp", ftp}, {"lthr", "lthr", lthr}, {"max-hr", "max_hr", maxHR}, {"w-prime", "w_prime", wPrime}} {
+				if !cmd.Flags().Changed(f.flag) {
+					continue
+				}
+				if f.v <= 0 {
+					return usagef("--%s must be positive", f.flag)
+				}
+				body[f.key], want[f.key] = f.v, float64(f.v)
+			}
+			if cmd.Flags().Changed("threshold-pace") {
+				mps, err := parsePace(pace)
+				if err != nil {
+					return err
+				}
+				body["threshold_pace"], want["threshold_pace"] = mps, mps
+			}
+			if len(body) == 0 && !recalcHR {
+				return usagef("nothing to change: pass --ftp, --threshold-pace, --lthr, --max-hr, --w-prime or --recalc-hr-zones")
+			}
+			c, err := a.icuClient()
+			if err != nil {
+				return err
+			}
+			ctx := context.Background()
+			old, err := c.SportSettings(ctx, sport)
+			var upstream *apierr.Error
+			if errors.As(err, &upstream) && upstream.Status == http.StatusNotFound {
+				return usagef("Intervals.icu has no sport settings covering --type %s; `coachctl icu profile` lists the athlete's sports", sport)
+			} else if err != nil {
+				return err
+			}
+			value := func(key string) float64 {
+				if v, ok := want[key]; ok {
+					return v
+				}
+				v, _ := icu.Num(old, key)
+				return v
+			}
+			if l, m := value("lthr"), value("max_hr"); l > 0 && m > 0 && l >= m {
+				return usagef("LTHR %.0f would not be below max HR %.0f; check the values", l, m)
+			}
+			per100m := strings.Contains(icu.Str(old, "pace_units"), "100")
+			label := strings.Join(stringList(old, "types"), "/")
+			if label == "" {
+				label = sport
+			}
+			var changes []settingChange
+			var shown []string
+			for _, f := range settingFields {
+				if v, ok := want[f.key]; ok {
+					o := optNum(old, f.key)
+					changes = append(changes, settingChange{Field: f.key, Old: o, New: v})
+					shown = append(shown, fmt.Sprintf("%s %s → %s", f.label, f.show(o, per100m), f.show(&v, per100m)))
+				}
+			}
+			path := fmt.Sprintf("/athlete/{athlete}/sport-settings/%s?recalcHrZones=%t", url.PathEscape(sport), recalcHR)
+			hrNote := func(zones []float64) string {
+				switch {
+				case recalcHR && dryRun:
+					return "HR zones will be recomputed from LTHR and max HR."
+				case recalcHR:
+					return "HR zones recomputed, bpm: " + fmtNums(zones)
+				case len(zones) > 0 && (want["lthr"] > 0 || want["max_hr"] > 0):
+					return "HR zones keep their bpm values (" + fmtNums(zones) + "); --recalc-hr-zones recomputes them from LTHR and max HR."
+				}
+				return ""
+			}
+			if dryRun {
+				if a.JSON {
+					return a.printJSON(map[string]any{"dry_run": true, "method": "PUT", "path": path, "body": body, "sport": label, "changes": nonNil(changes)})
+				}
+				a.printf("Dry run, nothing sent: PUT %s\n", path)
+				if len(shown) > 0 {
+					a.printf("%s: %s\n", label, strings.Join(shown, ", "))
+				}
+				if n := hrNote(numList(old, "hr_zones")); n != "" {
+					a.printf("%s\n", n)
+				}
+				return nil
+			}
+			out, err := c.UpdateSportSettings(ctx, sport, body, recalcHR)
+			if err != nil {
+				return err
+			}
+			if len(out) == 0 {
+				if out, err = c.SportSettings(ctx, sport); err != nil {
+					return err
+				}
+			}
+			if bad := settingsDrift(old, out, want, recalcHR); len(bad) > 0 {
+				return fmt.Errorf("the write to %s went through, but %s; compare `coachctl icu profile` with the values above and set them back", label, strings.Join(bad, "; "))
+			}
+			if a.JSON {
+				return a.printJSON(map[string]any{"updated": label, "changes": nonNil(changes), "hr_zones_bpm": numList(out, "hr_zones")})
+			}
+			if len(shown) > 0 {
+				a.printf("Updated %s: %s\n", label, strings.Join(shown, ", "))
+			} else {
+				a.printf("Updated %s.\n", label)
+			}
+			if n := hrNote(numList(out, "hr_zones")); n != "" {
+				a.printf("%s\n", n)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&sport, "type", "", "the sport whose settings change: an activity type such as Run or Ride (required)")
+	cmd.Flags().IntVar(&ftp, "ftp", 0, "FTP in watts")
+	cmd.Flags().StringVar(&pace, "threshold-pace", "", "threshold pace as m:ss per km (4:10 or 4:10/km), or m:ss/100m; sent as m/s")
+	cmd.Flags().IntVar(&lthr, "lthr", 0, "lactate threshold heart rate, bpm")
+	cmd.Flags().IntVar(&maxHR, "max-hr", 0, "maximum heart rate, bpm")
+	cmd.Flags().IntVar(&wPrime, "w-prime", 0, "W' (anaerobic work capacity), joules")
+	cmd.Flags().BoolVar(&recalcHR, "recalc-hr-zones", false, "have Intervals.icu recompute the HR zones from LTHR and max HR")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show old → new and the request, send nothing")
+	return cmd
+}
+
+// settingsDrift lists what a settings write did that it was not asked to:
+// a guarded field that moved, or a requested value that did not arrive.
+func settingsDrift(before, after icu.Object, want map[string]float64, recalcHR bool) []string {
+	var bad []string
+	for _, key := range guardedSettings {
+		if v, ok := want[key]; ok {
+			got, _ := icu.Num(after, key)
+			if math.Abs(got-v) > 0.001 {
+				bad = append(bad, fmt.Sprintf("%s reads %v instead of %v", key, after[key], v))
+			}
+			continue
+		}
+		if key == "hr_zones" && recalcHR {
+			continue
+		}
+		if _, present := after[key]; !present {
+			continue
+		}
+		was, _ := json.Marshal(before[key])
+		now, _ := json.Marshal(after[key])
+		if string(was) != string(now) {
+			bad = append(bad, fmt.Sprintf("%s also changed from %s to %s", key, was, now))
+		}
+	}
+	return bad
+}
+
+func stringList(o icu.Object, key string) []string {
+	arr, _ := o[key].([]any)
+	var out []string
+	for _, v := range arr {
+		if s, ok := v.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func (a *App) icuGetCmd() *cobra.Command {

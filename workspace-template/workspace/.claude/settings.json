@@ -28,6 +28,7 @@
     ],
     "ask": [
       "Bash(coachctl icu workout *)",
+      "Bash(coachctl icu settings *)",
       "Bash(coachctl hevy routine create*)",
       "Bash(coachctl hevy routine update*)",
       "Bash(coachctl hevy workout create*)"

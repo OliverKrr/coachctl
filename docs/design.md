@@ -88,8 +88,8 @@ Shipped in the workspace template's `.claude/settings.json`:
 
 - **allow** the record commands (`session`, `journal`, `item`, `metric`), the Intervals.icu and Hevy
   reads, `icu get`, `doctor`;
-- **ask** before `icu workout *` and `hevy routine create`: an `ask` rule prompts in an interactive
-  or Remote Control session and is denied in a headless run;
+- **ask** before `icu workout *`, `icu settings *` and the Hevy writes: an `ask` rule prompts in an
+  interactive or Remote Control session and is denied in a headless run;
 - **deny** `Edit`/`Write` on the CLI-owned files.
 
 A routine that must push headlessly gets an explicit grant in its `.tools` file.

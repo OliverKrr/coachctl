@@ -3,8 +3,9 @@
 Sources reviewed up to 2026-10-17. Contents: [Which command answers what](#which-command-answers-what) ·
 [Units and fields](#units-and-fields) · [Dates and timezones](#dates-and-timezones) ·
 [Fitness, fatigue, form](#fitness-fatigue-form) · [Wellness](#wellness) ·
-[Planned workouts](#planned-workouts) · [Workout text format](#workout-text-format) ·
-[Limits and errors](#limits-and-errors) · [Pitfalls](#pitfalls) · [When this guide runs out](#when-this-guide-runs-out)
+[Thresholds and sport settings](#thresholds-and-sport-settings) · [Planned workouts](#planned-workouts) ·
+[Workout text format](#workout-text-format) · [Limits and errors](#limits-and-errors) ·
+[Pitfalls](#pitfalls) · [When this guide runs out](#when-this-guide-runs-out)
 
 ## Which command answers what
 
@@ -13,9 +14,12 @@ Sources reviewed up to 2026-10-17. Contents: [Which command answers what](#which
 | Today's date for the athlete, thresholds, zones      | `icu profile` (run it first; never use a remembered FTP)  |
 | What was trained in a period, volume, load           | `icu activities --since D [--type Run]`                   |
 | One session in depth: intervals, zone times, decoupling | `icu activity <id>`                                    |
+| Reps in detail: offsets, GAP, running dynamics per rep | `icu activity <id>` (text), `--json` for every field   |
 | Pacing, drift, W' balance, anything per second       | `icu streams <id> > data/<id>.csv`, then a script         |
 | Morning readiness: HRV, resting HR, sleep, soreness  | `icu wellness --days 14`                                  |
 | Fitness trend, freshness before a race               | `icu fitness --days 42`                                   |
+| Taper or load projection from exact numbers          | `icu fitness --since D --until D --json`                  |
+| Update thresholds after a test                       | `icu settings set --type Run ... --dry-run`               |
 | What is planned, races ahead                         | `icu events --since D --days N [--category RACE_A,...]`   |
 | Planned against done for one week                    | `icu week [--date D]`                                     |
 | Weekly volume over months                            | `icu summary --days 112 [--type Run] [--csv]`             |
@@ -68,17 +72,24 @@ anything; coachctl's text output already does for distance, time and pace.
 - Running cadence may be stored per foot (half of steps per minute); check against the activity
   before judging it.
 - `icu_intervals` (in `icu activity`): per interval `type` (WORK, RECOVERY, …), duration, distance,
-  average speed, power, HR, `intensity`, `decoupling`, `zone`, `average_gradient` (a fraction).
+  average speed, power, HR, `intensity`, `decoupling`, `zone`, `average_gradient` (a fraction), and
+  `start_time`/`end_time`, seconds from the start, which the text output shows as `m:ss–m:ss`.
   Intervals come from device laps or from Intervals' own detection, depending on the athlete's
   laps setting, which applies only to activities analysed after it changed; know which you have
-  before judging reps.
+  before judging reps. No field records which it was: the text output's header says so by
+  comparing the interval count with the device's `icu_lap_count` (lap-based intervals match it
+  give or take one, after setting aside 1–2 s slivers where laps meet), and names intervals the
+  athlete edited by hand (`icu_intervals_edited`).
 - Running-dynamics averages (`average_stance_time`, `average_stance_time_balance`,
   `average_vertical_oscillation`, `average_vertical_ratio`, `average_step_length`, …) sit on the
   activity and, for runs recorded since September 2026, on each interval. They leave out
   standing-still zeros, so prefer them to a plain mean over the stream. Older runs get them only
   after a re-analysis in the web app. Values from a watch and from a foot pod are not comparable
-  (vertical oscillation arrives in mm from one and cm from the other).
-- Grade-adjusted pace is native: `gap` (m/s) on the activity and on each interval, `gap_zone_times`;
+  (vertical oscillation arrives in mm from one and cm from the other; a Garmin watch also stores
+  step length in mm). `icu activity` text shows them on the activity and per interval as stored:
+  GCT (stance time, ms), GCT balance (% left), VO, VR (%), step, LSS (leg spring stiffness).
+- Grade-adjusted pace is native: `gap` (m/s) on the activity and on each interval (both in
+  `icu activity` text), `gap_zone_times`;
   the sport's `gap_model` (`NONE` or `STRAVA_RUN`) says whether it is computed. Per-kilometre GAP
   needs the streams.
 - `coasting_time` s is on every activity. W' balance: `icu_max_wbal_depletion` on the activity,
@@ -103,7 +114,12 @@ anything; coachctl's text output already does for distance, time and pace.
 
 - CTL (fitness, ~42-day load average) and ATL (fatigue, ~7-day) live on the daily wellness
   records, not on a fitness endpoint. `icu fitness` reads them and computes form = CTL − ATL and form
-  as a share of CTL.
+  as a share of CTL. Its `--json` keeps CTL, ATL and form unrounded (the text rounds to 0.1): a
+  projection that steps the model forward day by day drifts on rounded inputs.
+- The day's load is on the same records: `ctlLoad` and `atlLoad`, the load that day fed into CTL
+  and ATL, the sum of its activities' `icu_training_load` (`icu fitness` shows it as `load`). On
+  today and later days it also counts planned workouts no activity has matched yet, so a forecast
+  row's load is the planned load of that day.
 - Only all-sports CTL/ATL exists. A per-sport fitness has to be computed from activity loads.
 - `rampRate` on a day is the rolling ramp drawn on the fitness chart (CTL change per week).
 - Planned workouts with a load feed the forecast: future CTL/ATL already include them. Days without
@@ -124,6 +140,22 @@ anything; coachctl's text output already does for distance, time and pace.
   Intervals.icu. Treat absence as "unknown", never as a low value.
 - Custom wellness fields appear only when the athlete defined them in their settings.
 
+## Thresholds and sport settings
+
+Each sport's settings (`icu profile` shows them) hold FTP, threshold pace, LTHR, max HR, W' and the
+zones, for a group of activity types (Run often covers VirtualRun and TrailRun too).
+
+- `icu settings set --type Run --threshold-pace 3:55 --lthr 168 --dry-run` shows old → new; drop
+  `--dry-run` to write (`PUT /athlete/{id}/sport-settings/{type}`). Pace is given as m:ss per km
+  (or m:ss/100m) and stored as m/s. Only the fields passed are sent.
+- Power and pace zones are percentages of the threshold and move with it. HR zones are bpm and stay
+  put when LTHR or max HR change, unless `--recalc-hr-zones` has Intervals recompute them; check the
+  zones `icu profile` shows afterwards against the athlete's own zone model.
+- Activities keep the thresholds they were analysed with (`icu_ftp` on an activity); a new
+  threshold changes later analysis, not history.
+- Change a threshold on evidence (a test, a race, a sustained shift in curve models) and log why in
+  the journal; the athlete confirms before the write.
+
 ## Planned workouts
 
 `icu workout push` creates a calendar event. The rules that matter:
@@ -134,8 +166,11 @@ anything; coachctl's text output already does for distance, time and pace.
   athlete's free text go first, step lines after, in the same description.
 - After a push, coachctl reports how many steps were parsed. Zero steps means nothing structured
   reaches the watch: fix the syntax and `icu workout edit <id> --description-stdin`.
-- A description without steps (a free-text session) needs `--moving-time` and `--load`, or the
-  fitness forecast ignores it.
+- A description without steps (a free-text session) needs `--moving-time` and `--load` (on push or
+  edit), or the fitness forecast ignores it.
+- **Check the weekday with the date.** Pass the plan's weekday with every `--date` on push and edit
+  (`--date 2026-10-21 --weekday Wed`); coachctl refuses a date on another weekday before sending
+  anything.
 - **Edit in place, don't delete and recreate.** `icu workout edit` keeps the event id, and an edit
   updates the workout already on the watch; delete-and-recreate leaves duplicates and breaks
   pairing. Change the date with `--date`, the text with `--description-stdin`. For a change across
@@ -153,8 +188,8 @@ anything; coachctl's text output already does for distance, time and pace.
   or the plan states as that range; its midpoint puts a different band on the watch.
 - Leave the athlete's tags alone; they drive filters in their own views. Provenance belongs in
   `--external-id`.
-- Events also carry `carbs_per_hour` (g/h, the fuelling target shown in the calendar) and
-  `load_target`; read them with `icu events --json`.
+- `--carbs-per-hour` on push or edit sets `carbs_per_hour` (g/h), the fuelling target the calendar
+  shows; `icu events` prints it. Events also carry `load_target`; read it with `icu events --json`.
 - A workout reaches the watch only when the athlete's watch connection has planned-workout upload
   switched on, and one dated in the past may not sync at all.
 - `icu events --json --resolve` shows planned targets as watts, bpm and m/s at the thresholds of

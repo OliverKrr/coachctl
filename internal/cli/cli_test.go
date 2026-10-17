@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -205,6 +206,19 @@ func fakeICU(t *testing.T, posted *map[string]any) *httptest.Server {
 		case r.URL.Path == "/athlete/i42/events/778" && r.Method == http.MethodPut:
 			_ = json.NewDecoder(r.Body).Decode(posted)
 			_, _ = io.WriteString(w, `{"id":778,"category":"WORKOUT","start_date_local":"2026-10-21T00:00:00","type":"Run","name":"6x1k","external_id":"w43-tue","workout_doc":{"steps":[{}]}}`)
+		case r.URL.Path == "/athlete/i42/wellness.json":
+			_, _ = io.WriteString(w, `[{"id":"2026-10-17","ctl":61.78404,"atl":47.82364,"rampRate":-2.1011314,"ctlLoad":108.0,"atlLoad":108.0},
+				{"id":"2026-10-16","ctl":60.670456,"atl":38.582657,"rampRate":-2.754139,"ctlLoad":17.0,"atlLoad":17.0}]`)
+		case r.URL.Path == "/activity/i7" && r.Method == http.MethodGet:
+			_, _ = io.WriteString(w, `{"id":"i7","start_date_local":"2026-10-15T07:00:00","type":"Run","name":"3x1k","distance":8000,"moving_time":2400,
+				"gap":3.5,"average_stance_time":251.4,"average_vertical_oscillation":93.4,"icu_lap_count":3,
+				"icu_intervals":[{"type":"WORK","start_time":0,"end_time":283,"elapsed_time":283,"moving_time":283,"distance":1000,"average_speed":3.54,"gap":3.46,
+					"average_stance_time":254.3,"average_stance_time_balance":48.64,"average_vertical_oscillation":95.81,"average_vertical_ratio":7.27,"average_step_length":1288},
+				{"type":"RECOVERY","start_time":283,"end_time":284,"elapsed_time":1,"moving_time":1,"distance":3},
+				{"type":"WORK","start_time":284,"end_time":3725,"elapsed_time":3441,"moving_time":3441,"distance":7000,"average_speed":3.1}]}`)
+		case r.URL.Path == "/athlete/i42/events/779" && r.Method == http.MethodPut:
+			_ = json.NewDecoder(r.Body).Decode(posted)
+			_, _ = io.WriteString(w, `{"id":779,"category":"WORKOUT","start_date_local":"2026-10-22T00:00:00","type":"Ride","name":"Z2","icu_training_load":45,"carbs_per_hour":60,"workout_doc":{"steps":[{}]}}`)
 		case r.URL.Path == "/athlete/i42/gear.json":
 			_, _ = io.WriteString(w, `[{"id":"g1","name":"Shoe","api_key":"nope","nested":{"refresh_token":"x"}}]`)
 		default:
@@ -262,6 +276,62 @@ func TestICU(t *testing.T) {
 		t.Errorf("a push with a known external id must update that event:\n%s\nsent %+v", updated, posted)
 	}
 
+	// 2026-10-21 is a Wednesday: a plan that says Tuesday must fail before any request.
+	posted = nil
+	if _, errOut, code := e.run("- 10m Z2", "icu", "workout", "push", "--date", "2026-10-21", "--weekday", "Tue", "--type", "Run", "--name", "x"); code != ExitUsage || !strings.Contains(errOut, "is a Wednesday, not a Tuesday") || posted != nil {
+		t.Errorf("weekday guard: exit %d, %q, sent %+v", code, errOut, posted)
+	}
+	if _, errOut, code := e.run("", "icu", "workout", "push", "--date", "2026-10-21", "--weekday", "Mittwoch", "--type", "Run", "--name", "x"); code != ExitUsage || !strings.Contains(errOut, "Mon, Tue") {
+		t.Errorf("bad weekday: exit %d, %q", code, errOut)
+	}
+	dry = e.ok("- 2h 65-75%", "icu", "workout", "push", "--date", "2026-10-21", "--weekday", "wednesday", "--type", "Ride", "--name", "Z2", "--carbs-per-hour", "60", "--dry-run", "--json")
+	if !strings.Contains(dry, `"carbs_per_hour": 60`) || posted != nil {
+		t.Errorf("push --carbs-per-hour dry run:\n%s", dry)
+	}
+	if _, errOut, code := e.run("", "icu", "workout", "edit", "779", "--weekday", "Thu"); code != ExitUsage || !strings.Contains(errOut, "pass the new --date") {
+		t.Errorf("edit --weekday without --date: exit %d, %q", code, errOut)
+	}
+	if _, _, code := e.run("", "icu", "workout", "edit", "779", "--date", "2026-10-22", "--weekday", "Wed"); code != ExitUsage || posted != nil {
+		t.Errorf("edit weekday guard: exit %d, sent %+v", code, posted)
+	}
+	edited := e.ok("", "icu", "workout", "edit", "779", "--date", "2026-10-22", "--weekday", "Thu", "--load", "45", "--moving-time", "3600", "--carbs-per-hour", "60")
+	if !strings.Contains(edited, "Updated event 779") || !strings.Contains(edited, "carbs 60 g/h") {
+		t.Errorf("edit:\n%s", edited)
+	}
+	if posted["icu_training_load"] != 45.0 || posted["moving_time"] != 3600.0 || posted["carbs_per_hour"] != 60.0 || posted["start_date_local"] != "2026-10-22T00:00:00" {
+		t.Errorf("edit sent %+v", posted)
+	}
+	if _, errOut, code := e.run("", "icu", "workout", "edit", "779", "--load", "-5"); code != ExitUsage || !strings.Contains(errOut, "--load must not be negative") {
+		t.Errorf("negative load: exit %d, %q", code, errOut)
+	}
+
+	fit := e.ok("", "icu", "fitness", "--days", "2")
+	for _, want := range []string{"2026-10-17: fitness (CTL) 61.8, fatigue (ATL) 47.8, form 14 (22.6%), ramp rate -2.1", "date        CTL    ATL    form   load", "2026-10-16  60.7   38.6   22.1   17"} {
+		if !strings.Contains(fit, want) {
+			t.Errorf("fitness lacks %q\n%s", want, fit)
+		}
+	}
+	var days []fitnessDay
+	if err := json.Unmarshal([]byte(e.ok("", "icu", "fitness", "--days", "2", "--json")), &days); err != nil {
+		t.Fatal(err)
+	}
+	if len(days) != 2 || days[1].CTL != 61.78404 || days[1].ATL != 47.82364 || days[1].Load == nil || *days[1].Load != 108 {
+		t.Errorf("fitness --json must keep full precision and the day's load: %+v", days)
+	}
+
+	act := e.ok("", "icu", "activity", "i7")
+	for _, want := range []string{
+		"GAP 4:46/km",
+		"running dynamics: GCT 251 ms, VO 93.4",
+		"intervals (from the device's 3 laps):",
+		"WORK      0:00–4:43  1.00 km  0:04:43  4:42/km  GAP 4:49/km  GCT 254 ms  GCT balance 48.6% L  VO 95.8  VR 7.3%  step 1288",
+		"WORK      4:44–1:02:05  7.00 km",
+	} {
+		if !strings.Contains(act, want) {
+			t.Errorf("activity lacks %q\n%s", want, act)
+		}
+	}
+
 	raw := e.ok("", "icu", "get", "/athlete/{athlete}/gear.json")
 	if strings.Contains(raw, "nope") || strings.Contains(raw, `"x"`) || !strings.Contains(raw, "[redacted]") {
 		t.Errorf("raw get must redact:\n%s", raw)
@@ -270,6 +340,90 @@ func TestICU(t *testing.T) {
 	t.Setenv("INTERVALS_API_KEY", "wrong")
 	if _, errOut, code := e.run("", "icu", "profile"); code != ExitUpstream || !strings.Contains(errOut, "INTERVALS_API_KEY") {
 		t.Errorf("rejected key: exit %d, %q", code, errOut)
+	}
+}
+
+func TestICUSettingsSet(t *testing.T) {
+	e := newEnv(t)
+	settings := map[string]any{"id": 101.0, "types": []any{"Run", "VirtualRun"}, "ftp": 414.0, "lthr": 166.0, "max_hr": 187.0,
+		"threshold_pace": 4.524887, "w_prime": 12600.0, "pace_units": "MINS_KM", "hr_zones": []any{133.0, 149.0, 157.0, 165.0, 169.0, 175.0, 187.0},
+		"pace_zones": []any{77.5, 87.7, 94.3, 100.0, 103.4, 111.5, 999.0}}
+	var sent map[string]any
+	var query string
+	wipeZones := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/athlete/i42/sport-settings/Swim":
+			w.WriteHeader(http.StatusNotFound)
+		case r.URL.Path == "/athlete/i42/sport-settings/Run" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(settings)
+		case r.URL.Path == "/athlete/i42/sport-settings/Run" && r.Method == http.MethodPut:
+			sent, query = nil, r.URL.RawQuery
+			_ = json.NewDecoder(r.Body).Decode(&sent)
+			out := map[string]any{}
+			for k, v := range settings {
+				out[k] = v
+			}
+			for k, v := range sent {
+				out[k] = v
+			}
+			if wipeZones {
+				out["pace_zones"] = nil
+			}
+			_ = json.NewEncoder(w).Encode(out)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("INTERVALS_API_BASE", srv.URL)
+	t.Setenv("INTERVALS_ATHLETE_ID", "i42")
+	t.Setenv("INTERVALS_API_KEY", "k3y")
+
+	dry := e.ok("", "icu", "settings", "set", "--type", "Run", "--threshold-pace", "3:55/km", "--lthr", "168", "--dry-run")
+	for _, want := range []string{
+		"Dry run, nothing sent: PUT /athlete/{athlete}/sport-settings/Run?recalcHrZones=false",
+		"Run/VirtualRun: threshold pace 3:41/km → 3:55/km, LTHR 166 bpm → 168 bpm",
+		"HR zones keep their bpm values (133 149 157 165 169 175 187); --recalc-hr-zones",
+	} {
+		if !strings.Contains(dry, want) {
+			t.Errorf("dry run lacks %q\n%s", want, dry)
+		}
+	}
+	if sent != nil {
+		t.Fatalf("dry run sent %+v", sent)
+	}
+
+	out := e.ok("", "icu", "settings", "set", "--type", "Run", "--threshold-pace", "3:55", "--max-hr", "189", "--recalc-hr-zones")
+	if !strings.Contains(out, "Updated Run/VirtualRun: threshold pace 3:41/km → 3:55/km, max HR 187 bpm → 189 bpm") || !strings.Contains(out, "HR zones recomputed") {
+		t.Errorf("set:\n%s", out)
+	}
+	if query != "recalcHrZones=true" || len(sent) != 2 || sent["max_hr"] != 189.0 || math.Abs(sent["threshold_pace"].(float64)-1000.0/235) > 1e-9 {
+		t.Errorf("sent %+v with ?%s; only the changed fields go out, pace as m/s", sent, query)
+	}
+
+	wipeZones = true
+	_, errOut, code := e.run("", "icu", "settings", "set", "--type", "Run", "--ftp", "420")
+	if code != ExitFailure || !strings.Contains(errOut, "went through, but pace_zones also changed") {
+		t.Errorf("a write that changes an unrequested field must fail loudly: exit %d, %q", code, errOut)
+	}
+
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--lthr", "170"}, "--type is required"},
+		{[]string{"--type", "Run"}, "nothing to change"},
+		{[]string{"--type", "Run", "--threshold-pace", "4.10"}, "must be m:ss per km"},
+		{[]string{"--type", "Run", "--ftp", "0"}, "--ftp must be positive"},
+		{[]string{"--type", "Run", "--lthr", "190"}, "LTHR 190 would not be below max HR 187"},
+		{[]string{"--type", "Swim", "--threshold-pace", "1:45/100m"}, "no sport settings covering --type Swim"},
+	} {
+		if _, errOut, code := e.run("", append([]string{"icu", "settings", "set"}, c.args...)...); code != ExitUsage || !strings.Contains(errOut, c.want) {
+			t.Errorf("settings set %v: exit %d, %q (want %q)", c.args, code, errOut, c.want)
+		}
 	}
 }
 

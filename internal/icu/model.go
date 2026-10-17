@@ -207,6 +207,24 @@ func (c *Client) UpdateEvent(ctx context.Context, id string, fields Object) (Obj
 	return out, err
 }
 
+// SportSettings fetches the settings of one sport, by activity type (Run,
+// Ride, …) or settings id.
+func (c *Client) SportSettings(ctx context.Context, sport string) (Object, error) {
+	var out Object
+	err := c.Get(ctx, "/athlete/{athlete}/sport-settings/"+url.PathEscape(sport), nil, &out)
+	return out, err
+}
+
+// UpdateSportSettings changes the given fields of one sport's settings.
+// recalcHRZones has Intervals recompute the HR zones from LTHR and max HR;
+// without it the zones keep their bpm values.
+func (c *Client) UpdateSportSettings(ctx context.Context, sport string, fields Object, recalcHRZones bool) (Object, error) {
+	q := url.Values{"recalcHrZones": {strconv.FormatBool(recalcHRZones)}}
+	var out Object
+	err := c.Send(ctx, http.MethodPut, "/athlete/{athlete}/sport-settings/"+url.PathEscape(sport), q, fields, &out)
+	return out, err
+}
+
 // DeleteEvent removes one event.
 func (c *Client) DeleteEvent(ctx context.Context, id string) error {
 	return c.Send(ctx, http.MethodDelete, "/athlete/{athlete}/events/"+url.PathEscape(id), nil, nil, nil)

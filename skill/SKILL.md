@@ -54,8 +54,10 @@ record write in a session.
 | Commitments and flags                            | `item add --kind commitment\|flag [--date D] [--dedup-key K]`, `item list [--overdue]` |
 | A number measured again and again                | `metric record <series> <value> [--at D]`, `metric get <series>`, `metric list` |
 | Athlete thresholds, zones, today's date          | `icu profile`                                               |
-| What was trained                                 | `icu activities [--days N \| --since D] [--type Run]`, `icu activity <id>` |
+| What was trained                                 | `icu activities [--days N \| --since D] [--type Run]`, `icu activity <id>` (intervals with offsets, GAP, running dynamics) |
 | Readiness inputs (HRV, resting HR, sleep)        | `icu wellness`, `icu fitness`                               |
+| Load projection, taper                           | `icu fitness --since D --until D --json` (unrounded CTL/ATL, the day's load) |
+| New thresholds after a test                      | `icu settings set --type Run [--threshold-pace m:ss] [--lthr N] [--ftp N] --dry-run` |
 | What is planned                                  | `icu events --since D --days N`, `icu week [--date D]`      |
 | Weekly volume trend                              | `icu summary --days 84 [--type Run]`                        |
 | Per-second data for a script                     | `icu streams <id> > data/<file>.csv`                        |
@@ -84,8 +86,8 @@ writing a workout description. Hevy's routine format is in
 
 ## External writes
 
-`icu workout push|edit|delete`, `hevy routine create|update`, `hevy workout create` and `notify` reach
-outside the record.
+`icu workout push|edit|delete`, `icu settings set`, `hevy routine create|update`, `hevy workout create`
+and `notify` reach outside the record.
 
 1. Run the command with `--dry-run` first and read what it would send.
 2. In an interactive session, ask the athlete before the real call unless the record's tier table
@@ -93,6 +95,8 @@ outside the record.
 3. Make the real call directly, never inside a recipe script.
 4. Check the result: a pushed workout must report parsed steps, or its description syntax is wrong.
    Give each pushed session of a plan a stable `--external-id` (e.g. `plan-2026w44-tue`): a re-push
-   with the same key updates that event instead of adding a second one.
+   with the same key updates that event instead of adding a second one. Pass the plan's weekday
+   with every date (`--date 2026-10-21 --weekday Wed`): coachctl refuses a date on another weekday
+   before sending anything. A settings write prints old → new and fails if anything else moved.
 
 Done when the result line confirms the write (event id, routine id, `Sent`).

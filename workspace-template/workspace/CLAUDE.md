@@ -79,9 +79,10 @@ by cron. Read `scripts/README.md` before editing the runner, a routine prompt or
 
 - API keys live in `~/.config/coachctl/env` (0600), outside this repo. Keys stay out of commits,
   transcripts, charts and replies.
-- Stop and ask the user before an external write (`coachctl icu workout …`, `coachctl hevy routine
-  create`), before changing a document whose tier says to ask first, and before anything that needs
-  a credential you do not have. If the user is not there, leave the work in `TODO.md`.
+- Stop and ask the user before an external write (`coachctl icu workout …`, `coachctl icu settings
+  set`, `coachctl hevy routine create`), before changing a document whose tier says to ask first,
+  and before anything that needs a credential you do not have. If the user is not there, leave the
+  work in `TODO.md`.
 
 ## Finishing a session
 
