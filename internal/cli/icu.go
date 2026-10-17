@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -384,7 +385,16 @@ func (a *App) icuActivitiesCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rows, err := c.Activities(context.Background(), since, until, fields)
+			// The API returns only the named fields: keep the id for --json,
+			// and fetch type when --type filters on it.
+			keep := fields
+			if len(fields) > 0 {
+				keep = withFields(fields, "id")
+				if len(types) > 0 {
+					keep = withFields(keep, "type")
+				}
+			}
+			rows, err := c.Activities(context.Background(), since, until, keep)
 			if err != nil {
 				return err
 			}
@@ -398,7 +408,7 @@ func (a *App) icuActivitiesCmd() *cobra.Command {
 				return a.writeCSV(cols, rows)
 			case a.JSON:
 				if len(fields) > 0 {
-					return a.printJSON(nonNil(pick(rows, fields)))
+					return a.printJSON(nonNil(pick(rows, keep)))
 				}
 				return a.printJSON(nonNil(rows))
 			}
@@ -420,7 +430,7 @@ func (a *App) icuActivitiesCmd() *cobra.Command {
 	}
 	r.flags(cmd, 7)
 	cmd.Flags().StringSliceVar(&types, "type", nil, "only these activity types, e.g. Run,Ride,WeightTraining")
-	cmd.Flags().StringSliceVar(&fields, "fields", nil, "fields to return (API names; see references/intervals.md)")
+	cmd.Flags().StringSliceVar(&fields, "fields", nil, "fields to return (API names; see references/intervals.md); --json always keeps id")
 	cmd.Flags().BoolVar(&asCSV, "csv", false, "RFC 4180 CSV with a header row")
 	return cmd
 }
@@ -646,7 +656,9 @@ cadence, altitude, grade_smooth, latlng.
 
 Without --types, coachctl asks for the default channels the activity actually
 has (its stream_types): the API rejects the whole request when one requested
-type does not exist. With --types, every name you pass must exist.`,
+type does not exist. With --types, every name you pass must exist.
+
+A missing sample (a sensor gap) is an empty cell in the CSV and null in --json.`,
 		Example: `  coachctl icu streams i98765432 > data/streams.csv
   coachctl icu streams i98765432 --types time,heartrate,velocity_smooth > data/streams.csv`,
 		Args: cobra.ExactArgs(1),
@@ -797,7 +809,7 @@ func (a *App) icuWellnessCmd() *cobra.Command {
 				return a.writeCSV(cols, rows)
 			case a.JSON:
 				if len(fields) > 0 {
-					return a.printJSON(nonNil(pick(rows, withIDField(fields))))
+					return a.printJSON(nonNil(pick(rows, withFields(fields, "id"))))
 				}
 				return a.printJSON(nonNil(rows))
 			}
@@ -815,13 +827,15 @@ func (a *App) icuWellnessCmd() *cobra.Command {
 	return cmd
 }
 
-func withIDField(fields []string) []string {
-	for _, f := range fields {
-		if f == "id" {
-			return fields
+// withFields puts each of extra in front of fields unless fields names it.
+func withFields(fields []string, extra ...string) []string {
+	var out []string
+	for _, f := range extra {
+		if !slices.Contains(fields, f) {
+			out = append(out, f)
 		}
 	}
-	return append([]string{"id"}, fields...)
+	return append(out, fields...)
 }
 
 // fitnessDay carries the model at full precision: projections that compound

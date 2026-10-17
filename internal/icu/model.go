@@ -120,6 +120,21 @@ func (c *Client) Streams(ctx context.Context, id string, types []string) ([]Stre
 	return out, nil
 }
 
+// MarshalJSON writes missing samples back as null, since encoding/json
+// refuses NaN.
+func (s Stream) MarshalJSON() ([]byte, error) {
+	data := make([]*float64, len(s.Data))
+	for i := range s.Data {
+		if !math.IsNaN(s.Data[i]) {
+			data[i] = &s.Data[i]
+		}
+	}
+	return json.Marshal(struct {
+		Type string     `json:"type"`
+		Data []*float64 `json:"data"`
+	}{s.Type, data})
+}
+
 // Wellness lists daily wellness records between two dates; each record's id
 // is its date.
 func (c *Client) Wellness(ctx context.Context, oldest, newest string) ([]Object, error) {

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -192,8 +193,20 @@ func fakeICU(t *testing.T, posted *map[string]any) *httptest.Server {
 			if r.URL.Query().Get("oldest") != "2026-10-11" || r.URL.Query().Get("newest") != "2026-10-17" {
 				t.Errorf("activities range = %s", r.URL.RawQuery)
 			}
-			_, _ = io.WriteString(w, `[{"id":"i2","start_date_local":"2026-10-16T07:00:00","type":"Run","name":"Easy, \"short\"","distance":10000,"moving_time":3000,"icu_training_load":50,"icu_intensity":70.5,"average_heartrate":140},
-				{"id":"i1","start_date_local":"2026-10-14T18:00:00","type":"Ride","name":"Z2","distance":40000,"moving_time":5400,"icu_training_load":80}]`)
+			var rows []map[string]any
+			_ = json.Unmarshal([]byte(`[{"id":"i2","start_date_local":"2026-10-16T07:00:00","type":"Run","name":"Easy, \"short\"","distance":10000,"moving_time":3000,"icu_training_load":50,"icu_intensity":70.5,"average_heartrate":140},
+				{"id":"i1","start_date_local":"2026-10-14T18:00:00","type":"Ride","name":"Z2","distance":40000,"moving_time":5400,"icu_training_load":80}]`), &rows)
+			// Like the API, return only the named fields.
+			if fields := r.URL.Query().Get("fields"); fields != "" {
+				for _, row := range rows {
+					for k := range row {
+						if !slices.Contains(strings.Split(fields, ","), k) {
+							delete(row, k)
+						}
+					}
+				}
+			}
+			_ = json.NewEncoder(w).Encode(rows)
 		case r.URL.Path == "/athlete/i42/events" && r.Method == http.MethodPost:
 			_ = json.NewDecoder(r.Body).Decode(posted)
 			_, _ = io.WriteString(w, `{"id":777,"category":"WORKOUT","start_date_local":"2026-10-21T00:00:00","type":"Run","name":"6x1k","workout_doc":{"steps":[{},{},{}]}}`)
@@ -216,6 +229,11 @@ func fakeICU(t *testing.T, posted *map[string]any) *httptest.Server {
 					"average_stance_time":254.3,"average_stance_time_balance":48.64,"average_vertical_oscillation":95.81,"average_vertical_ratio":7.27,"average_step_length":1288},
 				{"type":"RECOVERY","start_time":283,"end_time":284,"elapsed_time":1,"moving_time":1,"distance":3},
 				{"type":"WORK","start_time":284,"end_time":3725,"elapsed_time":3441,"moving_time":3441,"distance":7000,"average_speed":3.1}]}`)
+		case r.URL.Path == "/activity/i7/streams.json":
+			if r.URL.Query().Get("types") != "time,stance_time" {
+				t.Errorf("streams types = %s", r.URL.RawQuery)
+			}
+			_, _ = io.WriteString(w, `[{"type":"time","data":[0,1,2]},{"type":"stance_time","data":[251,null,253]}]`)
 		case r.URL.Path == "/athlete/i42/events/779" && r.Method == http.MethodPut:
 			_ = json.NewDecoder(r.Body).Decode(posted)
 			_, _ = io.WriteString(w, `{"id":779,"category":"WORKOUT","start_date_local":"2026-10-22T00:00:00","type":"Ride","name":"Z2","icu_training_load":45,"carbs_per_hour":60,"workout_doc":{"steps":[{}]}}`)
@@ -257,6 +275,38 @@ func TestICU(t *testing.T) {
 	text := e.ok("", "icu", "activities", "--type", "run")
 	if !strings.Contains(text, "10.0 km  0:50:00  load 50  IF 70%  HR 140") || strings.Contains(text, "Z2") {
 		t.Errorf("text:\n%s", text)
+	}
+	var picked []map[string]any
+	if err := json.Unmarshal([]byte(e.ok("", "icu", "activities", "--fields", "start_date_local,type", "--json")), &picked); err != nil {
+		t.Fatal(err)
+	}
+	if len(picked) != 2 || picked[0]["id"] != "i1" || picked[1]["id"] != "i2" || picked[0]["name"] != nil {
+		t.Errorf("--fields --json must keep the id and only the named fields: %+v", picked)
+	}
+	picked = nil
+	if err := json.Unmarshal([]byte(e.ok("", "icu", "activities", "--fields", "start_date_local", "--type", "Run", "--json")), &picked); err != nil {
+		t.Fatal(err)
+	}
+	if len(picked) != 1 || picked[0]["id"] != "i2" || picked[0]["type"] != "Run" {
+		t.Errorf("--type with --fields lacking type must still filter: %+v", picked)
+	}
+	if csvOut := e.ok("", "icu", "activities", "--fields", "start_date_local", "--type", "Ride", "--csv"); csvOut != "start_date_local\n2026-10-14T18:00:00\n" {
+		t.Errorf("--fields --csv keeps the named columns only:\n%s", csvOut)
+	}
+
+	// A sensor gap is a null sample: an empty CSV cell, null in --json.
+	if csvOut := e.ok("", "icu", "streams", "i7", "--types", "time,stance_time"); csvOut != "time,stance_time\n0,251\n1,\n2,253\n" {
+		t.Errorf("streams csv:\n%s", csvOut)
+	}
+	var streams []struct {
+		Type string     `json:"type"`
+		Data []*float64 `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(e.ok("", "icu", "streams", "i7", "--types", "time,stance_time", "--json")), &streams); err != nil {
+		t.Fatal(err)
+	}
+	if len(streams) != 2 || streams[1].Type != "stance_time" || len(streams[1].Data) != 3 || streams[1].Data[1] != nil || streams[1].Data[2] == nil || *streams[1].Data[2] != 253 {
+		t.Errorf("streams --json must write a missing sample as null: %+v", streams)
 	}
 
 	dry := e.ok("- 10m Z2", "icu", "workout", "push", "--date", "2026-10-21", "--type", "Run", "--name", "6x1k", "--dry-run")

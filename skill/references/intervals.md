@@ -264,7 +264,8 @@ ignored by the parser.
   while it is visible in the Intervals.icu web app, suspect an API restriction, check the forum
   thread below, and tell the athlete.
 - **Stream names.** One unknown type fails the whole streams request; `icu streams` without
-  `--types` asks only for types the activity has (`stream_types`).
+  `--types` asks only for types the activity has (`stream_types`). A sensor gap is an empty CSV
+  cell and `null` in `--json`; a script skips it rather than reading it as zero.
 - **Read after write.** A just-pushed event or a just-synced activity can take a moment to show in
   lists; re-read before concluding it is missing. In a long session, re-read numbers fetched hours
   ago rather than reusing them, and run `icu profile` again after a settings change or once the
