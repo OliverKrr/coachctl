@@ -170,16 +170,34 @@ func (c *Client) Summary(ctx context.Context, start, end string) ([]Object, erro
 	return out, nil
 }
 
-// CreateEvent posts a calendar event. With a uid, an existing event carrying
-// the same uid is updated instead, so a re-push does not duplicate.
+// CreateEvent posts a calendar event.
 func (c *Client) CreateEvent(ctx context.Context, event Object) (Object, error) {
 	q := url.Values{"upsertOnUid": {"false"}}
-	if Str(event, "uid") != "" {
-		q.Set("upsertOnUid", "true")
-	}
 	var out Object
 	err := c.Send(ctx, http.MethodPost, "/athlete/{athlete}/events", q, event, &out)
 	return out, err
+}
+
+// FindByExternalID looks for an event carrying externalID between two dates.
+// Intervals keeps external_id on events an API key creates (it replaces any
+// uid with its own, and its server-side upsert is for OAuth apps only), so an
+// idempotent re-push has to find the event first.
+func (c *Client) FindByExternalID(ctx context.Context, externalID, oldest, newest string) (Object, int, error) {
+	events, err := c.Events(ctx, oldest, newest, nil, false)
+	if err != nil {
+		return nil, 0, err
+	}
+	var found Object
+	matches := 0
+	for _, e := range events {
+		if Str(e, "external_id") == externalID {
+			matches++
+			if found == nil {
+				found = e
+			}
+		}
+	}
+	return found, matches, nil
 }
 
 // UpdateEvent changes the given fields of an event.

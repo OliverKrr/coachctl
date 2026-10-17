@@ -194,11 +194,17 @@ func fakeICU(t *testing.T, posted *map[string]any) *httptest.Server {
 			_, _ = io.WriteString(w, `[{"id":"i2","start_date_local":"2026-10-16T07:00:00","type":"Run","name":"Easy, \"short\"","distance":10000,"moving_time":3000,"icu_training_load":50,"icu_intensity":70.5,"average_heartrate":140},
 				{"id":"i1","start_date_local":"2026-10-14T18:00:00","type":"Ride","name":"Z2","distance":40000,"moving_time":5400,"icu_training_load":80}]`)
 		case r.URL.Path == "/athlete/i42/events" && r.Method == http.MethodPost:
-			if r.URL.Query().Get("upsertOnUid") != "true" {
-				t.Errorf("a uid push should upsert: %s", r.URL.RawQuery)
-			}
 			_ = json.NewDecoder(r.Body).Decode(posted)
 			_, _ = io.WriteString(w, `{"id":777,"category":"WORKOUT","start_date_local":"2026-10-21T00:00:00","type":"Run","name":"6x1k","workout_doc":{"steps":[{},{},{}]}}`)
+		case r.URL.Path == "/athlete/i42/events.json" && r.Method == http.MethodGet:
+			// The lookup window spans 60 days before today to 240 after the date.
+			if r.URL.Query().Get("oldest") != "2026-08-18" || r.URL.Query().Get("newest") != "2027-06-18" {
+				t.Errorf("external-id lookup window = %s", r.URL.RawQuery)
+			}
+			_, _ = io.WriteString(w, `[{"id":778,"category":"WORKOUT","start_date_local":"2026-10-20T00:00:00","name":"old","external_id":"w43-tue"}]`)
+		case r.URL.Path == "/athlete/i42/events/778" && r.Method == http.MethodPut:
+			_ = json.NewDecoder(r.Body).Decode(posted)
+			_, _ = io.WriteString(w, `{"id":778,"category":"WORKOUT","start_date_local":"2026-10-21T00:00:00","type":"Run","name":"6x1k","external_id":"w43-tue","workout_doc":{"steps":[{}]}}`)
 		case r.URL.Path == "/athlete/i42/gear.json":
 			_, _ = io.WriteString(w, `[{"id":"g1","name":"Shoe","api_key":"nope","nested":{"refresh_token":"x"}}]`)
 		default:
@@ -243,12 +249,17 @@ func TestICU(t *testing.T) {
 	if !strings.Contains(dry, "Dry run, nothing sent") || posted != nil {
 		t.Errorf("dry run sent or misprinted:\n%s", dry)
 	}
-	pushed := e.ok("- 10m Z2\n", "icu", "workout", "push", "--date", "2026-10-21", "--type", "Run", "--name", "6x1k", "--uid", "w43-tue")
+	pushed := e.ok("- 10m Z2\n", "icu", "workout", "push", "--date", "2026-10-21", "--type", "Run", "--name", "6x1k")
 	if !strings.Contains(pushed, "Created event 777") || !strings.Contains(pushed, "Parsed 3 top-level steps") {
 		t.Errorf("push:\n%s", pushed)
 	}
-	if posted["start_date_local"] != "2026-10-21T00:00:00" || posted["description"] != "- 10m Z2" || posted["uid"] != "w43-tue" || posted["category"] != "WORKOUT" {
+	if posted["start_date_local"] != "2026-10-21T00:00:00" || posted["description"] != "- 10m Z2" || posted["category"] != "WORKOUT" {
 		t.Errorf("posted = %+v", posted)
+	}
+	posted = nil
+	updated := e.ok("- 10m Z2\n", "icu", "workout", "push", "--date", "2026-10-21", "--type", "Run", "--name", "6x1k", "--external-id", "w43-tue")
+	if !strings.Contains(updated, "Updated event 778") || posted["external_id"] != "w43-tue" || posted["start_date_local"] != "2026-10-21T00:00:00" {
+		t.Errorf("a push with a known external id must update that event:\n%s\nsent %+v", updated, posted)
 	}
 
 	raw := e.ok("", "icu", "get", "/athlete/{athlete}/gear.json")

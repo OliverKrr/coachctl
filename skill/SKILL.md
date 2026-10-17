@@ -90,6 +90,7 @@ writing a workout description. Hevy's routine format is in
    already allows it; a scheduled routine writes only when its prompt says so.
 3. Make the real call directly, never inside a recipe script.
 4. Check the result: a pushed workout must report parsed steps, or its description syntax is wrong.
-   Give repeated pushes of a plan a stable `--uid` so a re-push updates instead of duplicating.
+   Give each pushed session of a plan a stable `--external-id` (e.g. `plan-2026w44-tue`): a re-push
+   with the same key updates that event instead of adding a second one.
 
 Done when the result line confirms the write (event id, routine id, `Sent`).

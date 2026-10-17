@@ -106,8 +106,11 @@ then and folding new findings in is a recurring maintenance step. Logic the guid
 into code where it can (computed form, the athlete's local date, unit rendering), with tests.
 
 `icu get` is a read-only escape hatch for endpoints without a command; it redacts secret-looking
-fields, since the athlete endpoint returns the account's own API key. Pushed workouts may carry a
-`--uid`, which turns the create into an upsert so a re-pushed plan updates instead of duplicating.
+fields, since the athlete endpoint returns the account's own API key. Pushed workouts may carry an
+`--external-id`: coachctl looks the key up on the calendar and updates that event, so a re-pushed
+plan does not duplicate. Intervals keeps `external_id` on events an API key creates, but its
+server-side upsert is for OAuth apps only and it replaces a client `uid` with its own (both
+verified against the live API), so the lookup happens client-side.
 
 Hevy gets the same treatment in `skill/references/hevy.md`, lighter, from the official API docs.
 User-specific rules (language of workout descriptions, which markers to push, thresholds) belong in

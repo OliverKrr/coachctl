@@ -1111,7 +1111,7 @@ Intervals parses it into structured steps that sync to the watch.`,
 }
 
 func (a *App) icuWorkoutPushCmd() *cobra.Command {
-	var date, at, sport, name, uid, category string
+	var date, at, sport, name, externalID, category string
 	var movingTime, load int
 	var indoor, dryRun bool
 	cmd := &cobra.Command{
@@ -1128,7 +1128,7 @@ Warmup
 Cooldown
 - 10m Z2 Pace
 EOF
-  coachctl icu workout push --date 2026-10-22 --type Ride --name "Z2" --uid plan-2026w43-wed --dry-run <<'EOF'
+  coachctl icu workout push --date 2026-10-22 --type Ride --name "Z2" --external-id plan-2026w43-wed --dry-run <<'EOF'
 - 60m 65-75%
 EOF`,
 		Args: cobra.NoArgs,
@@ -1164,17 +1164,38 @@ EOF`,
 			if indoor {
 				event["indoor"] = true
 			}
-			if uid != "" {
-				event["uid"] = uid
+			if externalID != "" {
+				event["external_id"] = externalID
 			}
-			if dryRun {
+			if dryRun && externalID == "" {
 				return a.dryRun("POST", "/athlete/{athlete}/events", event)
 			}
 			c, err := a.icuClient()
 			if err != nil {
 				return err
 			}
-			out, err := c.CreateEvent(context.Background(), event)
+			ctx := context.Background()
+			if externalID != "" {
+				existing, err := a.findPlanned(ctx, c, externalID, date)
+				if err != nil {
+					return err
+				}
+				if existing != "" {
+					path := "/athlete/{athlete}/events/" + existing
+					if dryRun {
+						return a.dryRun("PUT", path, event)
+					}
+					out, err := c.UpdateEvent(ctx, existing, event)
+					if err != nil {
+						return err
+					}
+					return a.reportEvent("Updated", out)
+				}
+				if dryRun {
+					return a.dryRun("POST", "/athlete/{athlete}/events", event)
+				}
+			}
+			out, err := c.CreateEvent(ctx, event)
 			if err != nil {
 				return err
 			}
@@ -1189,10 +1210,32 @@ EOF`,
 	cmd.Flags().IntVar(&movingTime, "moving-time", 0, "planned duration in seconds, when the description has no steps")
 	cmd.Flags().IntVar(&load, "load", 0, "planned training load, when Intervals cannot compute it")
 	cmd.Flags().BoolVar(&indoor, "indoor", false, "mark as an indoor workout")
-	cmd.Flags().StringVar(&uid, "uid", "", "stable id: pushing the same uid again updates that event instead of adding one")
+	cmd.Flags().StringVar(&externalID, "external-id", "", "your stable key for this session: pushing a key already on the calendar updates that event instead of adding one")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the request, send nothing")
 	_ = cmd.MarkFlagRequired("date")
 	return cmd
+}
+
+// findPlanned returns the id of the calendar event carrying externalID, or "".
+// It searches from 60 days before the earlier of today and date to 240 days
+// after the later, so a session moved to another day is still found.
+func (a *App) findPlanned(ctx context.Context, c *icu.Client, externalID, date string) (string, error) {
+	loc, err := a.location()
+	if err != nil {
+		return "", err
+	}
+	today := a.Now().In(loc).Format("2006-01-02")
+	lo, hi := min(date, today), max(date, today)
+	l, _ := time.Parse("2006-01-02", lo)
+	h, _ := time.Parse("2006-01-02", hi)
+	ev, n, err := c.FindByExternalID(ctx, externalID, l.AddDate(0, 0, -60).Format("2006-01-02"), h.AddDate(0, 0, 240).Format("2006-01-02"))
+	if err != nil || ev == nil {
+		return "", err
+	}
+	if n > 1 {
+		_, _ = fmt.Fprintf(a.Stderr, "coachctl: %d events carry external id %q; updating %s, delete the others\n", n, externalID, icu.Str(ev, "id"))
+	}
+	return icu.Str(ev, "id"), nil
 }
 
 func (a *App) dryRun(method, path string, body any) error {

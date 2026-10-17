@@ -16,3 +16,7 @@ out/*
 
 # healthchecks.io ping URLs are write capabilities.
 healthchecks.env
+
+# coachctl: its lock file and in-flight atomic writes.
+coaching/.coachctl.lock
+coaching/**/.*.tmp-*

@@ -109,8 +109,10 @@ anything; coachctl's text output already does for distance, time and pace.
 - **Edit in place, don't delete and recreate.** `icu workout edit` keeps the event id, and an edit
   updates the workout already on the watch; delete-and-recreate leaves duplicates and breaks
   pairing. Change the date with `--date`, the text with `--description-stdin`.
-- **Re-pushing a plan**: give each planned session a stable `--uid` (e.g. `plan-2026w44-tue`).
-  Pushing the same uid again updates that event instead of adding a second one.
+- **Re-pushing a plan**: give each planned session a stable `--external-id` (e.g.
+  `plan-2026w44-tue`). coachctl looks the key up on the calendar (60 days back to 240 days ahead)
+  and updates that event instead of adding a second one, even when the date changed. Intervals'
+  own upsert works only for OAuth apps, and it replaces any `uid` you send with its own.
 - Zone or percentage targets need the sport's thresholds and zones set in Intervals.icu
   (`icu profile` shows them). Pace targets without pace zones resolve to nothing on the watch.
   Check before choosing the target type; do not silently switch to HR.
