@@ -14,7 +14,20 @@ ci:
     test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
     go vet ./...
     golangci-lint run ./...
-    go test -race ./...
+    @just test-race
+
+# go test -race; on a kernel whose address space is too small for the race detector (39-bit VMA,
+# common on arm64 boards) plain go test with a note. GitHub CI always runs -race.
+test-race:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if out=$(go test -race ./... 2>&1); then printf '%s\n' "$out"; exit 0; fi
+    if grep -q 'unsupported VMA range' <<<"$out"; then
+        echo "note: the race detector cannot run on this kernel (VMA range); running go test without -race. GitHub CI runs it with -race."
+        exec go test ./...
+    fi
+    printf '%s\n' "$out"
+    exit 1
 
 # Format the code
 fmt:

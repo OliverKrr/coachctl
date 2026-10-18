@@ -13,7 +13,7 @@ deploys it. Test fixtures are synthetic, never someone's real coaching data.
 ## Commands
 
 ```sh
-just ci          # gofmt check, go vet, golangci-lint, go test -race: the gate before every commit
+just ci          # gofmt check, go vet, golangci-lint, go test -race (plain where the kernel cannot race): the gate
 just test        # go test ./...
 just build       # ./coachctl
 just snapshot    # goreleaser build of every target into dist/, no publish
