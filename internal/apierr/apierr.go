@@ -1,6 +1,7 @@
 // Package apierr is the error an external API call returns. The CLI maps it
 // to exit code 3, so scripts can tell "the service failed" from "my call was
-// wrong" (2) and "coachctl failed" (1).
+// wrong" (2) and "coachctl failed" (1); a 400 or 422 counts as a wrong call
+// and exits 2.
 package apierr
 
 import "fmt"

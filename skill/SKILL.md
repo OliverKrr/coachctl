@@ -78,8 +78,9 @@ writing a workout description. Hevy's routine format is in
 - Text output is for reading; add `--json` after the subcommand for scripts and `jq`
   (`coachctl item list --json`). Data for analysis goes straight to a file with `--csv > data/…`,
   never retyped: every number shown to the athlete comes from command or script output.
-- Exit codes: 0 ok, 1 failure, 2 your call was wrong (the message says how to fix it), 3 the
-  external service failed (retry later, or report it).
+- Exit codes: 0 ok, 1 failure, 2 your call was wrong (the message says how to fix it; a service
+  rejecting the request as invalid, HTTP 400 or 422, counts here), 3 the external service failed
+  (retry later, or report it).
 - A multi-step query asked more than once becomes a recipe: a script in `scripts/recipes/` that
   composes `coachctl … --json`, with a row in `scripts/recipes/README.md`. Check that catalog
   before composing raw calls.

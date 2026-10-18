@@ -82,6 +82,8 @@ func exitCode(err error) int {
 	var storeUsage *store.UsageError
 	var upstream *apierr.Error
 	switch {
+	case errors.As(err, &upstream) && callerFault(upstream.Status):
+		return ExitUsage
 	case errors.As(err, &upstream):
 		return ExitUpstream
 	case errors.As(err, &usage), errors.As(err, &storeUsage), errors.Is(err, store.ErrNotFound):
@@ -91,6 +93,13 @@ func exitCode(err error) int {
 	default:
 		return ExitFailure
 	}
+}
+
+// callerFault says whether an API status blames the request itself: a malformed or invalid call
+// (400, 422). Retrying cannot help, so it exits 2. A 404 stays 3: the services also use it for a
+// rejected key, which is no fault of the call.
+func callerFault(status int) bool {
+	return status == 400 || status == 422
 }
 
 // isCobraUsage recognises cobra's own argument and flag errors, which it

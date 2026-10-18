@@ -231,10 +231,22 @@ func fakeICU(t *testing.T, posted *map[string]any) *httptest.Server {
 				{"type":"RECOVERY","start_time":283,"end_time":284,"elapsed_time":1,"moving_time":1,"distance":3},
 				{"type":"WORK","start_time":284,"end_time":3725,"elapsed_time":3441,"moving_time":3441,"distance":7000,"average_speed":3.1}]}`)
 		case r.URL.Path == "/activity/i7/streams.json":
-			if r.URL.Query().Get("types") != "time,stance_time" {
+			switch r.URL.Query().Get("types") {
+			case "time,stance_time":
+				_, _ = io.WriteString(w, `[{"type":"time","data":[0,1,2]},{"type":"stance_time","data":[251,null,253]}]`)
+			case "time,bogus":
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = io.WriteString(w, `{"status":422,"error":"Invalid stream type [bogus]"}`)
+			case "time,ga_velocity":
+				// Like the API on a ride: a computed stream that does not apply is left out silently.
+				_, _ = io.WriteString(w, `[{"type":"time","data":[0,1,2]}]`)
+			default:
 				t.Errorf("streams types = %s", r.URL.RawQuery)
 			}
-			_, _ = io.WriteString(w, `[{"type":"time","data":[0,1,2]},{"type":"stance_time","data":[251,null,253]}]`)
+		case r.URL.Path == "/activity/i8" && r.Method == http.MethodGet:
+			_, _ = io.WriteString(w, `{"id":"i8","start_date_local":"2026-10-16T18:00:00","type":"VirtualRide","name":"Zwift","distance":30000,"moving_time":3600,
+				"average_speed":8.3333,"gap":8.3,"icu_average_watts":210,"average_step_length":3504,"average_stance_time":200,
+				"icu_intervals":[{"type":"WORK","start_time":0,"end_time":600,"moving_time":600,"distance":5000,"average_speed":8.3333,"average_watts":250,"average_step_length":3504}]}`)
 		case r.URL.Path == "/athlete/i42/events/779" && r.Method == http.MethodGet:
 			_, _ = io.WriteString(w, `{"id":779,"category":"WORKOUT","start_date_local":"2026-10-20T07:30:00","type":"Ride","name":"Z2"}`)
 		case r.URL.Path == "/athlete/i42/events/779" && r.Method == http.MethodPut:
@@ -330,6 +342,18 @@ func TestICU(t *testing.T) {
 	}
 	if len(streams) != 2 || streams[1].Type != "stance_time" || len(streams[1].Data) != 3 || streams[1].Data[1] != nil || streams[1].Data[2] == nil || *streams[1].Data[2] != 253 {
 		t.Errorf("streams --json must write a missing sample as null: %+v", streams)
+	}
+	// A 422 is the caller's mistake (an unknown stream type): exit 2, not "service failed".
+	if _, errOut, code := e.run("", "icu", "streams", "i7", "--types", "time,bogus"); code != ExitUsage || !strings.Contains(errOut, "Invalid stream type [bogus]") {
+		t.Errorf("streams with a bogus type: exit %d, %q", code, errOut)
+	}
+	if sOut, sErr, code := e.run("", "icu", "streams", "i7", "--types", "time,ga_velocity"); code != ExitOK || sOut != "time\n0\n1\n2\n" || !strings.Contains(sErr, "no ga_velocity stream in the response for i7") {
+		t.Errorf("a requested stream the API leaves out must be named on stderr: exit %d, out %q, err %q", code, sOut, sErr)
+	}
+	ride := e.ok("", "icu", "activity", "i8")
+	if !strings.Contains(ride, "avg speed 30.0 km/h") || !strings.Contains(ride, "30.0 km/h  250 W") ||
+		strings.Contains(ride, "pace") || strings.Contains(ride, "GAP") || strings.Contains(ride, "running dynamics") || strings.Contains(ride, "step") {
+		t.Errorf("a ride shows speed, and no pace, GAP or running dynamics:\n%s", ride)
 	}
 
 	dry := e.ok("- 10m Z2", "icu", "workout", "push", "--date", "2026-10-21", "--type", "Run", "--name", "6x1k", "--dry-run")

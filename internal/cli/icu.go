@@ -545,11 +545,12 @@ func (a *App) printActivity(o icu.Object) {
 		{"TRIMP", "trimp", "", "%.0f"}, {"RPE", "icu_rpe", "", "%.0f"}, {"feel", "feel", "", "%.0f"},
 		{"calories", "calories", "kcal", "%.0f"}, {"avg temp", "average_temp", "°C", "%.1f"},
 	}
+	ride, run := rideTypes[icu.Str(o, "type")], runTypes[icu.Str(o, "type")]
 	var parts []string
 	if v, ok := icu.Num(o, "average_speed"); ok && v > 0 {
-		parts = append(parts, "avg pace "+icu.Pace(v, false))
+		parts = append(parts, speedOrPace(v, ride, "avg "))
 	}
-	if v, ok := icu.Num(o, "gap"); ok && v > 0 {
+	if v, ok := icu.Num(o, "gap"); ok && v > 0 && !ride {
 		parts = append(parts, "GAP "+icu.Pace(v, false))
 	}
 	for _, m := range metrics {
@@ -580,7 +581,7 @@ func (a *App) printActivity(o icu.Object) {
 		}
 		a.printf("power zone times (Z1…): %s\n", zoneTimes(secs))
 	}
-	if dyn := runningDynamics(o); len(dyn) > 0 {
+	if dyn := runningDynamics(o); len(dyn) > 0 && run {
 		a.printf("running dynamics: %s\n", strings.Join(dyn, ", "))
 	}
 	if d := strings.TrimSpace(icu.Str(o, "description")); d != "" {
@@ -614,9 +615,13 @@ func (a *App) printActivity(o icu.Object) {
 			parts = append(parts, icu.Duration(t))
 		}
 		if v, ok := icu.Num(iv, "average_speed"); ok && v > 0 {
-			parts = append(parts, icu.Pace(v, false))
+			if ride {
+				parts = append(parts, fmt.Sprintf("%.1f km/h", v*3.6))
+			} else {
+				parts = append(parts, icu.Pace(v, false))
+			}
 		}
-		if v, ok := icu.Num(iv, "gap"); ok && v > 0 {
+		if v, ok := icu.Num(iv, "gap"); ok && v > 0 && !ride {
 			parts = append(parts, "GAP "+icu.Pace(v, false))
 		}
 		if w, ok := icu.Num(iv, "average_watts"); ok && w > 0 {
@@ -631,9 +636,27 @@ func (a *App) printActivity(o icu.Object) {
 		if z, ok := icu.Num(iv, "zone"); ok && z > 0 {
 			parts = append(parts, fmt.Sprintf("Z%.0f", z))
 		}
-		parts = append(parts, runningDynamics(iv)...)
+		if run {
+			parts = append(parts, runningDynamics(iv)...)
+		}
 		a.printf("  %s\n", strings.Join(parts, "  "))
 	}
+}
+
+// The activity types Intervals.icu groups as rides and as runs. Rides show speed instead of pace,
+// and running dynamics are shown for runs only: a watch can report step length on a trainer ride.
+var (
+	rideTypes = map[string]bool{"Ride": true, "VirtualRide": true, "MountainBikeRide": true, "GravelRide": true,
+		"EBikeRide": true, "EMountainBikeRide": true, "Velomobile": true, "Handcycle": true, "TrackRide": true, "Cyclocross": true}
+	runTypes = map[string]bool{"Run": true, "VirtualRun": true, "TrailRun": true}
+)
+
+// speedOrPace renders an average speed in m/s as km/h for a ride and as pace per km otherwise.
+func speedOrPace(mps float64, ride bool, prefix string) string {
+	if ride {
+		return fmt.Sprintf("%sspeed %.1f km/h", prefix, mps*3.6)
+	}
+	return prefix + "pace " + icu.Pace(mps, false)
 }
 
 // runningDynamics renders the running-dynamics averages an activity or
@@ -758,6 +781,17 @@ A missing sample (a sensor gap) is an empty cell in the CSV and null in --json.`
 			streams, err := c.Streams(ctx, args[0], types)
 			if err != nil {
 				return err
+			}
+			// The API drops a computed stream that does not apply to the activity's sport (GAP on a
+			// ride) without an error, so name every requested type the response lacks.
+			got := map[string]bool{}
+			for _, s := range streams {
+				got[s.Type] = true
+			}
+			for _, t := range types {
+				if !got[t] {
+					_, _ = fmt.Fprintf(a.Stderr, "coachctl: no %s stream in the response for %s (not recorded, or not computed for this sport)\n", t, args[0])
+				}
 			}
 			if a.JSON {
 				return a.printJSON(streams)

@@ -99,8 +99,9 @@ allows the record and read commands, and asks before external writes.
 | Setup   | `setup`, `init <dir>`, `skill install`, `doctor [--online]`, `import <coaching-mcp snapshot>` |
 
 Every command prints concise text, or JSON with `--json`; writes data with `--csv` where tabular;
-reports errors on stderr with the fix; and exits 0 (ok), 1 (failure), 2 (wrong call) or 3 (the
-external service failed). Nothing prompts. `coachctl <command> --help` has examples.
+reports errors on stderr with the fix; and exits 0 (ok), 1 (failure), 2 (wrong call, including a
+service's 400 or 422) or 3 (the external service failed). Nothing prompts. `coachctl <command>
+--help` has examples.
 
 ## Development
 

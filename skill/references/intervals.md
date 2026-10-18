@@ -306,6 +306,7 @@ and ignored by the parser.
   `API_KEY`, and the id usually starts with `i` (very old accounts have digits only). Athlete id
   `0` also works and means the key's own athlete.
 - 404 is a wrong path or id; 422 is a validation error (an unknown stream type, a name too long).
+  coachctl exits 2 on a 400 or 422 (fix the call) and 3 on every other API failure (retry later).
 - Event ids are integers; activity ids are strings like `i12345678`. Mixing them up gives odd
   errors.
 
@@ -319,15 +320,20 @@ and ignored by the parser.
   Feedback for the athlete belongs in a comment (`POST /activity/{id}/messages` with `content`),
   which the athlete and their connected coaches see: an outward-facing write to confirm first.
   coachctl writes neither; `icu get /activity/<id>/messages` reads the thread.
-- **Garmin data access** was under discussion in October 2026 (new Garmin developer terms). As of
-  2026-10-17 nothing is blocked. If wellness or activity data from Garmin suddenly stops arriving
-  while it is visible in the Intervals.icu web app, suspect an API restriction, check the forum
-  thread below, and tell the athlete. The API terms (section 1.1) require a Garmin attribution,
+- **Garmin data access.** Garmin filters undocumented FIT fields out of the files it sends over
+  its API: community Connect IQ fields such as VO2max, Performance Condition or Training Effect
+  arrive as 0 or null (reports since March 2026, widespread by October). A 0 there means missing,
+  not a value. Documented fields (heart rate, power, running dynamics) and the wellness push still
+  arrive. In mid-October 2026 the Intervals.icu developer first warned that API access to Garmin
+  data might be blocked, then reported after a call with Garmin that the requirements are not new
+  and an easier access path is coming. If Garmin data stops arriving while the web app shows it,
+  suspect a restriction, check the forum thread below, and tell the athlete. The API terms (section 1.1) require a Garmin attribution,
   as Garmin's brand guidelines describe it, wherever Garmin-recorded data is shown to people: a
   report or chart for others carries one.
 - **Stream names.** One unknown type fails the whole streams request; `icu streams` without
   `--types` asks only for types the activity has (`stream_types`), which leaves out computed ones
-  such as `ga_velocity`: name those. A sensor gap is an empty CSV cell and `null` in `--json`; a
+  such as `ga_velocity`: name those. A computed stream that does not apply to the sport (GAP on a
+  ride) is left out without an error; coachctl names each missing type on stderr. A sensor gap is an empty CSV cell and `null` in `--json`; a
   script skips it rather than reading it as zero.
 - **Read after write.** A just-pushed event or a just-synced activity can take a moment to show in
   lists; re-read before concluding it is missing. In a long session, re-read numbers fetched hours
