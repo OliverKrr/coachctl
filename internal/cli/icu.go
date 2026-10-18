@@ -510,7 +510,7 @@ func (a *App) icuActivityCmd() *cobra.Command {
 			}
 			o, err := c.Activity(context.Background(), args[0], !noIntervals)
 			if err != nil {
-				return err
+				return activityIDHint(err, args[0])
 			}
 			if a.JSON {
 				return a.printJSON(o)
@@ -521,6 +521,17 @@ func (a *App) icuActivityCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&noIntervals, "no-intervals", false, "skip the interval breakdown")
 	return cmd
+}
+
+// activityIDHint adds to a not-found error for an all-digits activity id that calendar event ids
+// look like that: activity ids from a device or Intervals itself start with i, while only Strava
+// stubs carry bare numbers.
+func activityIDHint(err error, id string) error {
+	var e *apierr.Error
+	if errors.As(err, &e) && e.Status == http.StatusNotFound && id != "" && strings.Trim(id, "0123456789") == "" {
+		e.Hint += "; event ids are integers (icu events), activity ids usually start with i (icu activities)"
+	}
+	return err
 }
 
 // isStravaStub recognises an activity that reached Intervals.icu through
@@ -754,7 +765,7 @@ A missing sample (a sensor gap) is an empty cell in the CSV and null in --json.`
 			if !cmd.Flags().Changed("types") {
 				act, err := c.Activity(ctx, args[0], false)
 				if err != nil {
-					return err
+					return activityIDHint(err, args[0])
 				}
 				if isStravaStub(act) {
 					return usagef("%s", stravaStubHint)
@@ -780,7 +791,7 @@ A missing sample (a sensor gap) is an empty cell in the CSV and null in --json.`
 			}
 			streams, err := c.Streams(ctx, args[0], types)
 			if err != nil {
-				return err
+				return activityIDHint(err, args[0])
 			}
 			// The API drops a computed stream that does not apply to the activity's sport (GAP on a
 			// ride) without an error, so name every requested type the response lacks.
@@ -1536,6 +1547,39 @@ const (
 	carbsHelp   = "fuelling target in grams of carbohydrate per hour, shown on the calendar"
 )
 
+// eventChanges lists an edit's fields as old → new, in a fixed order.
+func eventChanges(ev, fields icu.Object) string {
+	show := func(o icu.Object, key string) string {
+		switch key {
+		case "moving_time":
+			if v, ok := icu.Num(o, key); ok {
+				return icu.Duration(v)
+			}
+		case "icu_training_load", "carbs_per_hour":
+			if v, ok := icu.Num(o, key); ok {
+				return fmt.Sprintf("%.0f", v)
+			}
+		default:
+			if v := icu.Str(o, key); v != "" {
+				return v
+			}
+		}
+		return "-"
+	}
+	labels := []struct{ key, label string }{{"start_date_local", "start"}, {"name", "name"}, {"type", "type"},
+		{"moving_time", "duration"}, {"icu_training_load", "load"}, {"carbs_per_hour", "carbs g/h"}}
+	var out []string
+	for _, l := range labels {
+		if _, ok := fields[l.key]; ok {
+			out = append(out, fmt.Sprintf("%s %s → %s", l.label, show(ev, l.key), show(fields, l.key)))
+		}
+	}
+	if _, ok := fields["description"]; ok {
+		out = append(out, "description replaced")
+	}
+	return strings.Join(out, ", ")
+}
+
 // startClock turns --time HH:MM into the HH:MM:SS of an event's local start.
 func startClock(at string) (string, error) {
 	t, err := time.Parse("15:04", at)
@@ -1563,7 +1607,8 @@ func (a *App) icuWorkoutEditCmd() *cobra.Command {
 		Short: "Change a planned workout's date, time, name, type, description, load, duration or fuelling",
 		Long: `Change a planned workout in place. --date moves it to another day and keeps its start time;
 --time changes the time and keeps the day (00:00 means no time). Either one alone reads the event
-first, so a session timed to sit before or after another on the same day keeps its place.`,
+first, so a session timed to sit before or after another on the same day keeps its place.
+--dry-run reads the event too: it fails for an event that does not exist and shows old → new.`,
 		Example: `  coachctl icu workout edit 12345678 --date 2026-10-23 --weekday Fri
   coachctl icu workout edit 12345678 --date 2026-10-23 --time 06:30
   coachctl icu workout edit 12345678 --load 45 --moving-time 3600 --carbs-per-hour 60
@@ -1621,17 +1666,22 @@ EOF`,
 			}
 			ctx := context.Background()
 			var c *icu.Client
+			var ev icu.Object
+			keepHalf := (date != "") != (at != "")
+			// Read the event when half of its start must be kept, and on every dry run: a dry run
+			// should fail for an event that does not exist, and it shows old → new.
+			if keepHalf || dryRun {
+				var err error
+				if c, err = a.icuClient(); err != nil {
+					return err
+				}
+				if ev, err = c.Event(ctx, args[0]); err != nil {
+					return err
+				}
+			}
 			if date != "" || at != "" {
-				if date == "" || at == "" {
+				if keepHalf {
 					// Keep the half that was not given, so moving a timed session does not reset it to midnight.
-					var err error
-					if c, err = a.icuClient(); err != nil {
-						return err
-					}
-					ev, err := c.Event(ctx, args[0])
-					if err != nil {
-						return err
-					}
 					day, hhmmss := splitLocal(icu.Str(ev, "start_date_local"))
 					if date == "" {
 						if day == "" {
@@ -1647,6 +1697,9 @@ EOF`,
 			}
 			path := "/athlete/{athlete}/events/" + url.PathEscape(args[0])
 			if dryRun {
+				if !a.JSON {
+					a.printf("Event %s %q: %s\n", args[0], icu.Str(ev, "name"), eventChanges(ev, fields))
+				}
 				return a.dryRun("PUT", path, fields)
 			}
 			if c == nil {

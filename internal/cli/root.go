@@ -96,10 +96,10 @@ func exitCode(err error) int {
 }
 
 // callerFault says whether an API status blames the request itself: a malformed or invalid call
-// (400, 422). Retrying cannot help, so it exits 2. A 404 stays 3: the services also use it for a
-// rejected key, which is no fault of the call.
+// (400, 422) or an id or path that does not exist (404, which Telegram also answers for a rejected
+// bot token). Retrying cannot help, so these exit 2; the message says what to fix.
 func callerFault(status int) bool {
-	return status == 400 || status == 422
+	return status == 400 || status == 404 || status == 422
 }
 
 // isCobraUsage recognises cobra's own argument and flag errors, which it

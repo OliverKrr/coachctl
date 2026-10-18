@@ -306,7 +306,8 @@ and ignored by the parser.
   `API_KEY`, and the id usually starts with `i` (very old accounts have digits only). Athlete id
   `0` also works and means the key's own athlete.
 - 404 is a wrong path or id; 422 is a validation error (an unknown stream type, a name too long).
-  coachctl exits 2 on a 400 or 422 (fix the call) and 3 on every other API failure (retry later).
+  coachctl exits 2 on a 400, 404 or 422 (fix the call) and 3 on every other API failure (retry
+  later).
 - Event ids are integers; activity ids are strings like `i12345678`. Mixing them up gives odd
   errors.
 

@@ -100,7 +100,7 @@ allows the record and read commands, and asks before external writes.
 
 Every command prints concise text, or JSON with `--json`; writes data with `--csv` where tabular;
 reports errors on stderr with the fix; and exits 0 (ok), 1 (failure), 2 (wrong call, including a
-service's 400 or 422) or 3 (the external service failed). Nothing prompts. `coachctl <command>
+service's 400, 404 or 422) or 3 (the external service failed). Nothing prompts. `coachctl <command>
 --help` has examples.
 
 ## Development

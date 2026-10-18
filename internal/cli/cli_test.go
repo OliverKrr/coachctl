@@ -247,6 +247,9 @@ func fakeICU(t *testing.T, posted *map[string]any) *httptest.Server {
 			_, _ = io.WriteString(w, `{"id":"i8","start_date_local":"2026-10-16T18:00:00","type":"VirtualRide","name":"Zwift","distance":30000,"moving_time":3600,
 				"average_speed":8.3333,"gap":8.3,"icu_average_watts":210,"average_step_length":3504,"average_stance_time":200,
 				"icu_intervals":[{"type":"WORK","start_time":0,"end_time":600,"moving_time":600,"distance":5000,"average_speed":8.3333,"average_watts":250,"average_step_length":3504}]}`)
+		case r.URL.Path == "/activity/143545780" || r.URL.Path == "/athlete/i42/events/1":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"status":404,"error":"not found"}`)
 		case r.URL.Path == "/athlete/i42/events/779" && r.Method == http.MethodGet:
 			_, _ = io.WriteString(w, `{"id":779,"category":"WORKOUT","start_date_local":"2026-10-20T07:30:00","type":"Ride","name":"Z2"}`)
 		case r.URL.Path == "/athlete/i42/events/779" && r.Method == http.MethodPut:
@@ -411,6 +414,18 @@ func TestICU(t *testing.T) {
 	}
 	if dry := e.ok("", "icu", "workout", "edit", "779", "--date", "2026-10-22", "--dry-run", "--json"); !strings.Contains(dry, `"start_date_local": "2026-10-22T07:30:00"`) {
 		t.Errorf("edit --date --dry-run must show the kept time:\n%s", dry)
+	}
+	// A dry run reads the event: it fails for one that does not exist and shows old → new.
+	posted = nil
+	if _, errOut, code := e.run("", "icu", "workout", "edit", "1", "--name", "x", "--dry-run"); code != ExitUsage || !strings.Contains(errOut, "HTTP 404") || posted != nil {
+		t.Errorf("edit --dry-run on a missing event: exit %d, %q, sent %+v", code, errOut, posted)
+	}
+	if dry := e.ok("", "icu", "workout", "edit", "779", "--name", "Z2 long", "--load", "60", "--dry-run"); !strings.Contains(dry, `Event 779 "Z2": name Z2 → Z2 long, load - → 60`) || !strings.Contains(dry, "Dry run, nothing sent: PUT") || posted != nil {
+		t.Errorf("edit --dry-run must show old → new and send nothing:\n%s", dry)
+	}
+	// An all-digits id that is not an activity gets a hint about event ids.
+	if _, errOut, code := e.run("", "icu", "activity", "143545780"); code != ExitUsage || !strings.Contains(errOut, "event ids are integers") {
+		t.Errorf("activity with an event id: exit %d, %q", code, errOut)
 	}
 	posted = nil
 	if _, errOut, code := e.run("", "icu", "workout", "edit", "779", "--time", "7pm"); code != ExitUsage || !strings.Contains(errOut, "must be HH:MM") || posted != nil {
@@ -665,8 +680,9 @@ func TestNotify(t *testing.T) {
 		t.Errorf("over-long: %d %q", code, errOut)
 	}
 	t.Setenv("TELEGRAM_BOT_TOKEN", "bad")
-	if _, errOut, code := e.run("x", "notify"); code != ExitUpstream || strings.Contains(errOut, "bad") {
-		t.Errorf("bad token must fail upstream without echoing it: %d %q", code, errOut)
+	// Telegram answers a rejected token with 404: the call is wrong, not the service down.
+	if _, errOut, code := e.run("x", "notify"); code != ExitUsage || strings.Contains(errOut, "bad") || !strings.Contains(errOut, "TELEGRAM_BOT_TOKEN") {
+		t.Errorf("bad token must exit 2 without echoing it: %d %q", code, errOut)
 	}
 }
 
