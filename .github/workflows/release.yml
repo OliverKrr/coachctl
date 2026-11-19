@@ -11,9 +11,13 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
+      # Build with the newest patched toolchain, not go.mod's minimum: the binary embeds the
+      # standard library, so building with go.mod's 1.25.0 shipped every stdlib CVE fixed since.
+      # CI (ci.yml) keeps testing against the minimum.
       - uses: actions/setup-go@v7.0.0
         with:
-          go-version-file: go.mod
+          go-version: stable
+          check-latest: true
       - run: go test ./...
       - uses: goreleaser/goreleaser-action@v7.2.3
         with:
